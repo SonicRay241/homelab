@@ -8,6 +8,11 @@ export type ParsedUsage = {
 const count = (value: unknown): number => (typeof value === "number" ? value : 0);
 const cachedCount = (value: unknown): number | null => (typeof value === "number" ? value : null);
 
+/** Cached prompt tokens are a subset of the prompt count; report only the uncached remainder. */
+export function uncachedInput(total: number, cached: number | null): number {
+  return Math.max(0, total - (cached ?? 0));
+}
+
 /** JSON objects from either a plain JSON body or an SSE/data-line stream. */
 function jsonObjects(text: string): unknown[] {
   const trimmed = text.trim();
@@ -49,11 +54,12 @@ function lastObject<T>(objects: unknown[], predicate: (value: Record<string, any
 }
 
 function ollamaCounters(body: Record<string, any>): ParsedUsage {
+  const cached_input_tokens = cachedCount(body.prompt_eval_cached_count);
   return {
     model: typeof body.model === "string" ? body.model : "unknown",
-    input_tokens: count(body.prompt_eval_count),
+    input_tokens: uncachedInput(count(body.prompt_eval_count), cached_input_tokens),
     output_tokens: count(body.eval_count),
-    cached_input_tokens: cachedCount(body.prompt_eval_cached_count),
+    cached_input_tokens,
   };
 }
 
@@ -104,12 +110,13 @@ export function parseUsage(endpoint: string, text: string): ParsedUsage | null {
         if (!body.usage || typeof body.usage !== "object") return null;
         const usage = body.usage as Record<string, any>;
         const details = usage.prompt_tokens_details;
+        const cached_input_tokens =
+          details && typeof details === "object" ? cachedCount((details as Record<string, unknown>).cached_tokens) : null;
         return {
           model: typeof body.model === "string" ? body.model : "unknown",
-          input_tokens: count(usage.prompt_tokens),
+          input_tokens: uncachedInput(count(usage.prompt_tokens), cached_input_tokens),
           output_tokens: count(usage.completion_tokens),
-          cached_input_tokens:
-            details && typeof details === "object" ? cachedCount((details as Record<string, unknown>).cached_tokens) : null,
+          cached_input_tokens,
         };
       });
     }

@@ -15,8 +15,6 @@ export type OtelConfig = {
 export type Config = {
   port: number;
   ollamaUrl: string;
-  /** Legacy SQLite usage file: replayed to OTLP on startup when OTEL is configured. */
-  legacyDbPath: string;
   loggingDisabled: boolean;
   refreshMs: number;
   infisical: InfisicalConfig;
@@ -50,7 +48,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   return {
     port: Number.parseInt(optional(env, "PORT", "8080"), 10),
     ollamaUrl: optional(env, "OLLAMA_URL", "http://ollama:11434").replace(/\/+$/, ""),
-    legacyDbPath: optional(env, "DB_PATH", "state/proxy-costs.db"),
     loggingDisabled: asBool(env.LOGGING_DISABLED),
     refreshMs: Math.max(1000, Number.parseInt(optional(env, "TOKEN_REFRESH_MS", "60000"), 10) || 60_000),
     infisical: {

@@ -1,12 +1,12 @@
-import { Database } from "bun:sqlite";
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import { createInfisicalClient } from "../src/auth/infisical.ts";
 import { TokenRegistry, hashToken } from "../src/auth/tokens.ts";
 import type { Config } from "../src/config.ts";
-import { replayLegacyUsage } from "../src/migrate.ts";
+import { replayUsageCsv } from "../src/replay.ts";
+import { uncachedInput } from "../src/usage.ts";
 import { createServer } from "../src/server.ts";
 import { createTelemetry } from "../src/telemetry.ts";
 
@@ -97,7 +97,12 @@ const collector = Bun.serve({
 });
 
 type OtlpValue = { stringValue?: string; intValue?: string | number; boolValue?: boolean };
-type OtlpSpan = { name: string; startTimeUnixNano?: string; attributes?: { key: string; value: OtlpValue }[] };
+type OtlpSpan = {
+  name: string;
+  startTimeUnixNano?: string;
+  endTimeUnixNano?: string;
+  attributes?: { key: string; value: OtlpValue }[];
+};
 type OtlpPayload = { resourceSpans?: { scopeSpans?: { spans?: OtlpSpan[] }[] }[] };
 
 function exportedSpans(): OtlpSpan[] {
@@ -115,7 +120,6 @@ const stateDir = mkdtempSync(join(tmpdir(), "ollama-gateway-"));
 const config: Config = {
   port: 0,
   ollamaUrl: `http://127.0.0.1:${ollama.port}`,
-  legacyDbPath: join(stateDir, "usage.db"),
   loggingDisabled: false,
   refreshMs: 60_000,
   infisical: {
@@ -200,6 +204,7 @@ test("emits the parsed usage on the request span", async () => {
   expect(intAttr(span!, "gen_ai.usage.input_tokens")).toBe(7);
   expect(intAttr(span!, "gen_ai.usage.output_tokens")).toBe(3);
   expect(strAttr(span!, "proxy.key_hash")).toBe(hashToken("tok-alice"));
+  expect(strAttr(span!, "proxy.username")).toBe("alice");
 });
 
 test("parses OpenAI-compatible usage including cached tokens", async () => {
@@ -213,9 +218,11 @@ test("parses OpenAI-compatible usage including cached tokens", async () => {
   await telemetry.forceFlush();
   const span = exportedSpans().find(candidate => candidate.name === "POST /v1/chat/completions");
   expect(span).toBeDefined();
-  expect(intAttr(span!, "gen_ai.usage.input_tokens")).toBe(11);
+  // 11 prompt tokens including 2 cached -> 9 uncached.
+  expect(intAttr(span!, "gen_ai.usage.input_tokens")).toBe(9);
   expect(intAttr(span!, "gen_ai.usage.output_tokens")).toBe(5);
   expect(intAttr(span!, "gen_ai.usage.cached_input_tokens")).toBe(2);
+  expect(uncachedInput(4, 9)).toBe(0);
 });
 
 test("reloads the token list from Infisical without a restart", async () => {
@@ -238,115 +245,113 @@ test("fails closed while no tokens are loaded", async () => {
   }
 });
 
-const LEGACY_SCHEMA = `
-  CREATE TABLE usage_logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp TEXT NOT NULL,
-    date TEXT NOT NULL,
-    model TEXT NOT NULL,
-    input_tokens INTEGER NOT NULL DEFAULT 0,
-    output_tokens INTEGER NOT NULL DEFAULT 0,
-    total_tokens INTEGER NOT NULL DEFAULT 0,
-    endpoint TEXT NOT NULL,
-    key_hash TEXT NOT NULL,
-    cached_input_tokens INTEGER
-  );
-`;
-
-function writeLegacyDb(path: string, rows: { timestamp: string; endpoint: string; cached: number | null }[]) {
+function writeCsv(path: string, text: string) {
   mkdirSync(dirname(path), { recursive: true });
-  const db = new Database(path);
-  db.exec(LEGACY_SCHEMA);
-  const insert = db.prepare(
-    "INSERT INTO usage_logs (timestamp, date, model, input_tokens, output_tokens, total_tokens, endpoint, key_hash, cached_input_tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-  );
-  for (const row of rows) {
-    insert.run(row.timestamp, row.timestamp.slice(0, 10), "legacy-model", 20, 4, 24, row.endpoint, "legacykey", row.cached);
-  }
-  db.close();
+  writeFileSync(path, text);
 }
 
-test("replays a legacy usage DB to OTLP without deleting it", async () => {
-  const legacyPath = join(stateDir, "legacy", "proxy-costs.db");
-  const rows = [
-    { timestamp: "2025-01-02T03:04:05.000Z", endpoint: "/api/chat", cached: null },
-    { timestamp: "2025-01-03T04:05:06.000Z", endpoint: "/api/generate", cached: 3 },
-  ];
-  writeLegacyDb(legacyPath, rows);
+const ns = (timestamp: string) => String(BigInt(Date.parse(timestamp)) * 1_000_000n);
 
-  const result = await replayLegacyUsage(legacyPath, telemetry);
-  expect(result?.replayed).toBe(2);
+test("replays the headerless dump.csv schema with usernames", async () => {
+  const path = join(stateDir, "dump", "dump.csv");
+  writeCsv(
+    path,
+    [
+      "2025-07-04 05:06:07.000+00,Coding-Agent,cache-model,100,40,hash-1,25",
+      "2025-07-05 06:07:08.000+00,Memed,cache-model,20,4,hash-2,",
+    ].join("\n") + "\n"
+  );
 
-  // Source and progress cursor stay in place; nothing is renamed.
-  expect(existsSync(legacyPath)).toBe(true);
-  expect(existsSync(`${legacyPath}.migrated`)).toBe(false);
-  expect(JSON.parse(readFileSync(`${legacyPath}.replayed.json`, "utf-8")).lastId).toBe(2);
+  const result = await replayUsageCsv(path, telemetry);
+  expect(result).toMatchObject({ replayed: 2, skipped: 0, total: 2, lastRow: 2 });
 
-  const replays = () => exportedSpans().filter(span => span.name.startsWith("usage.replay "));
-  expect(replays().length).toBe(2);
+  const replaySpans = exportedSpans().filter(span => span.name === "usage.replay");
+  const coding = replaySpans.find(span => strAttr(span, "usage.id") === "hash-1")!;
+  expect(strAttr(coding, "proxy.username")).toBe("Coding-Agent");
+  expect(intAttr(coding, "gen_ai.usage.input_tokens")).toBe(75); // 100 total - 25 cached
+  expect(intAttr(coding, "gen_ai.usage.cached_input_tokens")).toBe(25);
+  expect(intAttr(coding, "gen_ai.usage.output_tokens")).toBe(40);
+  expect(intAttr(coding, "usage.row_id")).toBe(1);
+  expect(strAttr(coding, "usage.date")).toBe("2025-07-04");
+  expect(coding.startTimeUnixNano).toBe(ns("2025-07-04 05:06:07.000+00"));
+  expect(attr(coding, "proxy.key_hash")).toBeUndefined();
 
-  const chat = replays().find(span => span.name === "usage.replay /api/chat")!;
-  expect(attr(chat, "proxy.replay")?.boolValue).toBe(true);
-  expect(strAttr(chat, "gen_ai.request.model")).toBe("legacy-model");
-  expect(intAttr(chat, "gen_ai.usage.input_tokens")).toBe(20);
-  expect(intAttr(chat, "gen_ai.usage.output_tokens")).toBe(4);
-  expect(intAttr(chat, "usage.row_id")).toBe(1);
-  expect(strAttr(chat, "usage.timestamp")).toBe(rows[0]!.timestamp);
-  expect(attr(chat, "gen_ai.usage.cached_input_tokens")).toBeUndefined();
-  expect(strAttr(chat, "proxy.key_hash")).toBe("legacykey");
+  const memed = replaySpans.find(span => strAttr(span, "usage.id") === "hash-2")!;
+  expect(strAttr(memed, "proxy.username")).toBe("Memed");
+  expect(intAttr(memed, "gen_ai.usage.input_tokens")).toBe(20);
+  expect(attr(memed, "gen_ai.usage.cached_input_tokens")).toBeUndefined();
+  expect(intAttr(memed, "usage.row_id")).toBe(2);
 
-  // Spans are stamped at replay time so backends inside their ingestion window accept them.
-  const replayMs = Number(BigInt(chat.startTimeUnixNano!) / 1_000_000n);
-  expect(Math.abs(Date.now() - replayMs)).toBeLessThan(60_000);
+  const cursor = JSON.parse(readFileSync(`${path}.replayed.json`, "utf-8")) as {
+    lastRow: number;
+    size: number;
+    mode: string;
+  };
+  expect(cursor).toMatchObject({ lastRow: 2, mode: "original" });
+  expect(cursor.size).toBe(Bun.file(path).size);
 
-  const generate = replays().find(span => span.name === "usage.replay /api/generate")!;
-  expect(intAttr(generate, "gen_ai.usage.cached_input_tokens")).toBe(3);
-
-  // Counters land at replay time and are tagged so dashboards can separate them from live traffic.
+  // Token counters exist for these rows and carry the username.
   const metrics = JSON.stringify(otlp.metrics);
   expect(metrics).toContain("proxy.replayed");
-  expect(metrics).toContain("legacy-model");
-
-  // A second run resumes from the cursor and emits nothing new.
-  const resumed = await replayLegacyUsage(legacyPath, telemetry);
-  expect(resumed?.replayed).toBe(0);
-  expect(replays().length).toBe(2);
-
-  // Forced backfill re-sends everything; optional original timestamps for backends that accept them.
-  const forced = await replayLegacyUsage(legacyPath, telemetry, { ignoreCursor: true, preserveTimestamps: true });
-  expect(forced?.replayed).toBe(2);
-  expect(replays().length).toBe(4);
-  const pinned = replays()
-    .filter(span => strAttr(span, "usage.timestamp") === rows[0]!.timestamp)
-    .at(-1)!;
-  expect(pinned.startTimeUnixNano).toBe(String(BigInt(Date.parse(rows[0]!.timestamp)) * 1_000_000n));
+  expect(metrics).toContain("Coding-Agent");
 });
 
-test("finds a .migrated file left by the old migrator", async () => {
-  const base = join(stateDir, "old-migrator", "proxy-costs.db");
-  writeLegacyDb(base, [{ timestamp: "2025-02-01T00:00:00.000Z", endpoint: "/api/chat", cached: null }]);
-  renameSync(base, `${base}.migrated`);
+test("maps CSV headers, quoted fields and reordered columns", async () => {
+  const path = join(stateDir, "headered", "dump.csv");
+  writeCsv(
+    path,
+    [
+      "model,username,cached_input_tokens,output_tokens,input_tokens,id,timestamp",
+      '"cache-model","Code, Inc","5","7","12","hash-q","2025-08-01 00:00:00.000+00"',
+    ].join("\n") + "\n"
+  );
 
-  const result = await replayLegacyUsage(base, telemetry);
-
-  expect(result?.source).toBe(`${base}.migrated`);
+  const result = await replayUsageCsv(path, telemetry);
   expect(result?.replayed).toBe(1);
-  expect(existsSync(`${base}.migrated`)).toBe(true);
 
-  // Discovery must ignore the cursor JSON it just wrote next to the source.
-  const again = await replayLegacyUsage(base, telemetry);
-  expect(again?.source).toBe(`${base}.migrated`);
-  expect(again?.replayed).toBe(0);
+  const span = exportedSpans().find(candidate => strAttr(candidate, "usage.id") === "hash-q")!;
+  expect(strAttr(span, "proxy.username")).toBe("Code, Inc");
+  expect(intAttr(span, "gen_ai.usage.input_tokens")).toBe(7);
+  expect(intAttr(span, "gen_ai.usage.cached_input_tokens")).toBe(5);
+  expect(intAttr(span, "gen_ai.usage.output_tokens")).toBe(7);
+  expect(strAttr(span, "usage.date")).toBe("2025-08-01");
 });
 
-test("leaves the legacy DB untouched when OTEL is disabled", async () => {
-  const legacyPath = join(stateDir, "no-otel", "proxy-costs.db");
-  writeLegacyDb(legacyPath, [{ timestamp: "2026-02-01T00:00:00.000Z", endpoint: "/api/chat", cached: null }]);
+test("resumes, forces and rewinds the CSV cursor", async () => {
+  const path = join(stateDir, "cursor", "dump.csv");
+  writeCsv(path, "2025-09-01 00:00:00.000+00,Coding-Agent,cache-model,10,2,hash-c,4\n");
 
-  await replayLegacyUsage(legacyPath, createTelemetry(null));
+  expect((await replayUsageCsv(path, telemetry))?.replayed).toBe(1);
+  expect((await replayUsageCsv(path, telemetry))?.replayed).toBe(0);
 
-  expect(existsSync(legacyPath)).toBe(true);
-  expect(existsSync(`${legacyPath}.migrated`)).toBe(false);
+  const count = () => exportedSpans().filter(span => span.name === "usage.replay").length;
+  const before = count();
+
+  expect((await replayUsageCsv(path, telemetry, { ignoreCursor: true }))?.replayed).toBe(1);
+  expect((await replayUsageCsv(path, telemetry, { ignoreCursor: true, ingestionTimestamps: true }))?.replayed).toBe(1);
+  const ingesting = exportedSpans()
+    .filter(span => strAttr(span, "usage.id") === "hash-c")
+    .sort((a, b) => Number(BigInt(b.startTimeUnixNano!)) - Number(BigInt(a.startTimeUnixNano!)))[0]!;
+  expect(Math.abs(Date.now() - Number(BigInt(ingesting.startTimeUnixNano!) / 1_000_000n))).toBeLessThan(60_000);
+
+  // Switching back to original mode rewinds and re-emits once.
+  expect((await replayUsageCsv(path, telemetry))?.replayed).toBe(1);
+  expect(count()).toBe(before + 3);
+  const cursor = JSON.parse(readFileSync(`${path}.replayed.json`, "utf-8")) as { mode: string };
+  expect(cursor.mode).toBe("original");
+});
+
+test("returns null when the CSV is missing", async () => {
+  expect(await replayUsageCsv(join(stateDir, "missing.csv"), telemetry)).toBeNull();
+});
+
+test("leaves the CSV untouched and writes no cursor when OTEL is disabled", async () => {
+  const path = join(stateDir, "no-otel", "dump.csv");
+  writeCsv(path, "2025-10-01 00:00:00.000+00,Coding-Agent,cache-model,1,1,hash-n,0\n");
+
+  expect(await replayUsageCsv(path, createTelemetry(null))).toBeNull();
+  expect(existsSync(path)).toBe(true);
+  expect(existsSync(`${path}.replayed.json`)).toBe(false);
 });
 
 test("exports OTLP spans and metrics", async () => {

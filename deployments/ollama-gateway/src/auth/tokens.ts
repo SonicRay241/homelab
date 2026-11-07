@@ -7,7 +7,8 @@ export function hashToken(token: string): string {
 }
 
 export class TokenRegistry {
-  private hashes = new Set<string>();
+  /** token hash -> username (Infisical secret name). */
+  private users = new Map<string, string>();
   private timer: ReturnType<typeof setInterval> | undefined;
 
   constructor(
@@ -17,24 +18,31 @@ export class TokenRegistry {
 
   /** False when no tokens are loaded at all: requests must fail closed (503), not open. */
   get ready(): boolean {
-    return this.hashes.size > 0;
+    return this.users.size > 0;
   }
 
   get size(): number {
-    return this.hashes.size;
+    return this.users.size;
   }
 
-  hasToken(token: string): boolean {
-    return token.length > 0 && this.hashes.has(hashToken(token));
+  /** Username for a bearer token, or null when the token is unknown. */
+  resolve(token: string): string | null {
+    if (!token) return null;
+    return this.users.get(hashToken(token)) ?? null;
   }
 
   /** Replace the token set atomically; a failed or empty fetch keeps the last known good set. */
   async refresh(): Promise<number> {
     const secrets = await this.client.listSecrets();
-    const next = new Set(secrets.map(secret => secret.trim()).filter(Boolean).map(hashToken));
+    const next = new Map<string, string>();
+    for (const secret of secrets) {
+      const name = secret.name.trim();
+      const value = secret.value.trim();
+      if (name && value) next.set(hashToken(value), name);
+    }
     // ponytail: empty result means a misconfigured path, not "revoke everyone"; keep last good set.
     if (next.size === 0) throw new Error("Infisical returned no secrets");
-    this.hashes = next;
+    this.users = next;
     return next.size;
   }
 

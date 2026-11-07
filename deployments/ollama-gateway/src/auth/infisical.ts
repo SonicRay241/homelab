@@ -1,8 +1,14 @@
 import type { InfisicalConfig } from "../config.ts";
 
+export type SecretEntry = {
+  /** Secret name, used as the username in telemetry (e.g. "Coding-Agent"). */
+  name: string;
+  /** Secret value: the bearer token. */
+  value: string;
+};
+
 export type InfisicalClient = {
-  /** Secret values from the configured folder; each one is an API token. */
-  listSecrets(): Promise<string[]>;
+  listSecrets(): Promise<SecretEntry[]>;
 };
 
 const TIMEOUT_MS = 10_000;
@@ -51,7 +57,7 @@ export function createInfisicalClient(cfg: InfisicalConfig): InfisicalClient {
     return login();
   }
 
-  async function fetchSecrets(retryOnUnauthorized: boolean): Promise<string[]> {
+  async function fetchSecrets(retryOnUnauthorized: boolean): Promise<SecretEntry[]> {
     const query = new URLSearchParams({
       workspaceId: cfg.projectId,
       environment: cfg.environment,
@@ -68,8 +74,12 @@ export function createInfisicalClient(cfg: InfisicalConfig): InfisicalClient {
     }
     if (!res.ok) throw new Error(`Infisical secrets request failed: HTTP ${res.status} ${await errorSnippet(res)}`);
 
-    const json = (await res.json()) as { secrets?: { secretValue?: unknown }[] };
-    return (json.secrets ?? []).flatMap(secret => (typeof secret.secretValue === "string" ? [secret.secretValue] : []));
+    const json = (await res.json()) as { secrets?: { secretKey?: unknown; secretValue?: unknown }[] };
+    return (json.secrets ?? []).flatMap(secret =>
+      typeof secret.secretKey === "string" && typeof secret.secretValue === "string"
+        ? [{ name: secret.secretKey, value: secret.secretValue }]
+        : []
+    );
   }
 
   return { listSecrets: () => fetchSecrets(true) };

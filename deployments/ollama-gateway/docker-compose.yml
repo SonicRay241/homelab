@@ -51,14 +51,9 @@ services:
       - INFISICAL_PROJECT_ID=${INFISICAL_PROJECT_ID}
       - INFISICAL_SECRET_PATH=${INFISICAL_SECRET_PATH}
       - TOKEN_REFRESH_MS=${TOKEN_REFRESH_MS:-60000}
-      # Legacy usage DB replayed to OTLP on startup, resumably (volume below).
-      - DB_PATH=${DB_PATH:-state/proxy-costs.db}
       # Optional: OTLP/HTTP collector base URL, e.g. http://otel-collector:4318
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-ollama-gateway}
-    volumes:
-      # Only needed to replay the legacy usage DB; the source is kept, not deleted.
-      - proxy_data:/app/state
     depends_on:
       - ollama
     networks:
@@ -67,4 +62,3 @@ services:
 
 volumes:
   ollama_data:
-  proxy_data:

@@ -32,7 +32,7 @@ gateway answers `503` rather than running open.
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | no | – | OTLP/HTTP base URL; telemetry is off when unset |
 | `OTEL_SERVICE_NAME` | no | `ollama-gateway` | `service.name` resource attribute |
 | `OTEL_SDK_DISABLED` | no | – | `1`/`true` turns telemetry off explicitly |
-| `DB_PATH` | no | `state/proxy-costs.db` | Legacy usage DB, replayed on startup |
+| `USAGE_CSV_PATH` | no | `dump.csv` | Backfill CLI default source (not used by the proxy) |
 | `LOGGING_DISABLED` | no | – | `1`/`true` disables usage capture and flag injection |
 
 ## Endpoints
@@ -47,40 +47,51 @@ chunk. The response is streamed through untouched; parsing happens after the las
 
 ## Telemetry
 
-- Span per request: `{method} {route}` with `http.*`, `proxy.key_hash`, `gen_ai.request.model`,
+- Span per request: `{method} {route}` with `http.*`, `proxy.key_hash`, `proxy.username`
+  (the Infisical secret name, e.g. `Coding-Agent`), `gen_ai.request.model`,
   `gen_ai.usage.input_tokens|output_tokens|cached_input_tokens`, `proxy.stream_aborted`.
+- `gen_ai.usage.input_tokens` is **uncached** input: `prompt_tokens - cached_tokens` (clamped at 0).
+  Cached tokens are reported separately, so `input + cached + output` is the true total.
 - Metrics: `proxy.requests`, `proxy.request.duration` (ms), `proxy.tokens`
   (`gen_ai.token.type=input|output|cached`).
 - Exported every 5s (spans) / 15s (metrics), flushed on `SIGTERM`.
 
-## Legacy usage DB and backfill
+## Historical backfill from CSV
 
-The old SQLite cost log is replayed to OTLP on startup, before the server listens. The source file is
-**never deleted or renamed**; progress is stored in `<source>.replayed.json` (`lastId`), so restarts
-resume after the last flushed batch instead of duplicating rows. If `<DB_PATH>` is missing, the newest
-`<DB_PATH>.migrated*` left by the old migrator is used.
+The proxy keeps no local usage state; history is imported with the backfill CLI, which reads the
+usage pipeline's CSV dump (`dump.csv`). The proxy never replays on boot, so deploys are not delayed by
+a large dump.
 
-Each row becomes one `usage.replay {endpoint}` span plus `proxy.tokens` counter additions:
+Source format: header optional; required columns are `timestamp, username, model, input_tokens,
+output_tokens`; optional columns are `id`, `cached_input_tokens`, `date`, `endpoint`, `key_hash`.
+Column order does not matter when a header is present; headerless files use
+`timestamp,username,model,input_tokens,output_tokens,id,cached_input_tokens`. Values may be numbers or
+numeric strings.
 
-- Spans are stamped at **replay time**, because backends reject or hide spans outside their
-  ingestion/retention window. The original values stay on the span as `usage.timestamp`,
-  `usage.date` and `usage.row_id`.
-- Counters are cumulative and cannot be backdated, so they are attributed to replay time and tagged
-  `proxy.replayed=true` to keep them separable from live traffic in dashboards.
-- Spans are flushed every 500 rows and the cursor advances only after each flush.
+Each row becomes one `usage.replay {endpoint}` span (or `usage.replay` when there is no endpoint):
 
-If OTEL is not configured the file is left untouched and a warning is logged.
-
-Manual backfill (safe to re-run; requires `OTEL_EXPORTER_OTLP_ENDPOINT`):
+- `username` → `proxy.username`, `id` → `usage.id`, CSV row ordinal → `usage.row_id`.
+- `input_tokens` is the **total** prompt count; the span's `gen_ai.usage.input_tokens` is
+  `input_tokens - cached_input_tokens` (clamped at 0), with cached tokens reported separately.
+- Spans keep the row's original time in `startTimeUnixNano`/`endTimeUnixNano`
+  (`start_time_unix_nano` on the wire); `usage.timestamp`/`usage.date` carry the same values.
+- `proxy.tokens` counters are tagged `proxy.replayed=true` and include `proxy.username`. They are
+  attributed to export time: the OTel SDK cannot backdate metric data points.
+- Progress lives in `<file>.replayed.json` (`lastRow`, file size, timestamp mode). A restart resumes;
+  a changed file size or timestamp mode starts over. The CSV is never modified.
 
 ```sh
-bun run backfill                          # resume from the cursor
-bun run backfill -- --all                 # re-send every row (duplicates if already stored)
-bun run backfill -- --db path/to.db       # explicit source
-bun run backfill -- --all --preserve-timestamps   # keep original span times (self-hosted backends)
+bun run backfill -- --file dump.csv                 # resume from the cursor
+bun run backfill -- --file dump.csv --all           # re-send every row (duplicates if already stored)
+bun run backfill -- --file dump.csv --ingestion-timestamps  # stamp spans at export time instead
 ```
 
-Inside the container: `docker compose run --rm proxy bun run /app/backfill.ts -- --all`.
+Inside the container, mount the dump read-only:
+
+```sh
+docker compose run --rm -v "$PWD/dump.csv:/app/dump.csv:ro" proxy \
+  bun run /app/backfill.ts --file /app/dump.csv --all
+```
 
 ## Development
 

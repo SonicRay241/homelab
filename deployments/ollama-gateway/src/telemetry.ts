@@ -29,23 +29,39 @@ export type RequestTelemetry = {
   finish(status: number, attributes?: Record<string, string | number | boolean>): void;
   /** Marks the span as failed before it ends. */
   fail(err: unknown): void;
-  recordUsage(usage: TokenUsage): void;
+  recordUsage(usage: TokenUsage, username?: string): void;
 };
 
 export type ReplayRecord = TokenUsage & {
   id: number;
   timestamp: string;
   date: string;
-  endpoint: string;
-  key_hash: string;
+  endpoint?: string;
+  key_hash?: string;
+  username?: string;
+  externalId?: string;
 };
+
+/** Accepts ISO 8601 and the SQLite/CSV form `2025-01-02 03:04:05.123+00`. */
+function parseTimestamp(value: string): Date | null {
+  const direct = new Date(value);
+  if (!Number.isNaN(direct.getTime())) return direct;
+
+  const normalized = value
+    .trim()
+    .replace(/^(\d{4}-\d{2}-\d{2}) /, "$1T")
+    .replace(/\.(\d{3})\d+/, ".$1")
+    .replace(/([+-]\d{2})$/, "$1:00");
+  const fallback = new Date(normalized);
+  return Number.isNaN(fallback.getTime()) ? null : fallback;
+}
 
 export type ReplayOptions = {
   /**
-   * Keep the row's original start time. Off by default because backends reject or hide spans outside
-   * their ingestion/retention window; the original time is always preserved in `usage.timestamp`.
+   * Stamp spans at export time instead of the row's original time. Use only when a backend rejects
+   * spans outside its ingestion window; the original time is always kept in `usage.timestamp`.
    */
-  preserveTimestamps?: boolean;
+  ingestionTimestamps?: boolean;
 };
 
 export type Telemetry = {
@@ -146,8 +162,8 @@ export function createTelemetry(cfg: OtelConfig | null): Telemetry {
           span.setStatus({ code: SpanStatusCode.ERROR, message: err instanceof Error ? err.message : String(err) });
         },
 
-        recordUsage(usage) {
-          addTokenCounts(usage, {});
+        recordUsage(usage, username) {
+          addTokenCounts(usage, username ? { "proxy.username": username } : {});
           span.setAttributes(usageAttributes(usage));
         },
       };
@@ -156,28 +172,34 @@ export function createTelemetry(cfg: OtelConfig | null): Telemetry {
     },
 
     replay(record, options = {}) {
-      const original = new Date(record.timestamp);
-      const preserve = options.preserveTimestamps === true && !Number.isNaN(original.getTime());
+      const original = options.ingestionTimestamps === true ? null : parseTimestamp(record.timestamp);
       const attributes = {
         "proxy.replay": true,
-        "http.route": record.endpoint,
-        "proxy.key_hash": record.key_hash,
+        ...(record.endpoint ? { "http.route": record.endpoint } : {}),
+        ...(record.key_hash ? { "proxy.key_hash": record.key_hash } : {}),
+        ...(record.username ? { "proxy.username": record.username } : {}),
+        ...(record.externalId ? { "usage.id": record.externalId } : {}),
         "usage.row_id": record.id,
         "usage.timestamp": record.timestamp,
         "usage.date": record.date,
         ...usageAttributes(record),
       };
 
-      // Backends enforce ingestion windows: a span stamped months ago is rejected or never queried.
-      // Counters cannot be backdated either, so they are attributed to replay time and tagged.
-      const span = tracer.startSpan(`usage.replay ${record.endpoint}`, {
-        kind: SpanKind.INTERNAL,
-        attributes,
-        ...(preserve ? { startTime: original } : {}),
-      });
-      span.end(preserve ? original : undefined);
+      // The SDK serializes startTime/endTime as startTimeUnixNano/endTimeUnixNano
+      // (start_time_unix_nano/end_time_unix_nano on the wire), so replaying keeps the original
+      // event time and the history lands in the right buckets. Metrics cannot be backdated: token
+      // counters are attributed to export time and tagged `proxy.replayed`.
+      const name = record.endpoint ? `usage.replay ${record.endpoint}` : "usage.replay";
+      if (original) {
+        tracer.startSpan(name, { kind: SpanKind.INTERNAL, attributes, startTime: original }).end(original);
+      } else {
+        tracer.startSpan(name, { kind: SpanKind.INTERNAL, attributes }).end();
+      }
 
-      addTokenCounts(record, { "proxy.replayed": true });
+      addTokenCounts(record, {
+        "proxy.replayed": true,
+        ...(record.username ? { "proxy.username": record.username } : {}),
+      });
     },
 
     async forceFlush() {

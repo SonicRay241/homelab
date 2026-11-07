@@ -64,6 +64,7 @@ function streamAndLog(
   upstream: Response,
   endpoint: string,
   keyHash: string,
+  username: string,
   request: RequestTelemetry
 ): Response {
   const chunks: Uint8Array[] = [];
@@ -89,7 +90,7 @@ function streamAndLog(
     }
 
     if (usage) {
-      request.recordUsage(usage);
+      request.recordUsage(usage, username);
       console.log(
         `[usage] ${endpoint} key=${keyHash} model=${usage.model} in=${usage.input_tokens} out=${usage.output_tokens}`
       );
@@ -159,10 +160,11 @@ export function createServer(deps: Deps) {
       if (!registry.ready) return deny(503, "Service Unavailable: authentication backend not ready");
 
       const token = bearerToken(req.headers.get("authorization"));
-      if (!registry.hasToken(token)) return deny(401, "Unauthorized");
+      const username = registry.resolve(token);
+      if (username === null) return deny(401, "Unauthorized");
 
       const keyHash = hashToken(token);
-      request.span.setAttributes({ "proxy.key_hash": keyHash });
+      request.span.setAttributes({ "proxy.key_hash": keyHash, "proxy.username": username });
 
       const headers: Record<string, string> = {};
       req.headers.forEach((value, key) => {
@@ -216,7 +218,7 @@ export function createServer(deps: Deps) {
         return new Response(upstream.body, { status: upstream.status, headers: upstream.headers });
       }
 
-      return streamAndLog(upstream, url.pathname, keyHash, request);
+      return streamAndLog(upstream, url.pathname, keyHash, username, request);
     },
   });
 }
