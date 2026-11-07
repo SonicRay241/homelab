@@ -1,0 +1,66 @@
+services:
+  ollama:
+    image: alpine/ollama:latest
+    restart: unless-stopped
+    pull_policy: always
+
+    expose:
+      - "11434"
+
+    environment:
+      OLLAMA_HOST: "0.0.0.0"
+      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-131072}
+      OLLAMA_API_KEY: ${OLLAMA_API_KEY}
+
+    volumes:
+      - ollama_data:/root/.ollama
+
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  models:
+    image: alpine/ollama:latest
+    restart: "no"
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    command:
+      - pull
+      - hf.co/Seneelya/harrier-oss-v1-270m-GGUF:Q8_0
+
+  proxy:
+    build: .
+    restart: unless-stopped
+    expose:
+      - "8080"
+    environment:
+      - PORT=8080
+      - OLLAMA_URL=http://ollama:11434
+      # Token list is read from every secret in this Infisical folder; no API_KEYS env needed.
+      - INFISICAL_BASE_URL=${INFISICAL_BASE_URL}
+      - INFISICAL_CLIENT_ID=${INFISICAL_CLIENT_ID}
+      - INFISICAL_CLIENT_SECRET=${INFISICAL_CLIENT_SECRET}
+      - INFISICAL_ENV=${INFISICAL_ENV}
+      - INFISICAL_PROJECT_ID=${INFISICAL_PROJECT_ID}
+      - INFISICAL_SECRET_PATH=${INFISICAL_SECRET_PATH}
+      - TOKEN_REFRESH_MS=${TOKEN_REFRESH_MS:-60000}
+      # Legacy usage DB replayed to OTLP once at startup (volume below).
+      - DB_PATH=${DB_PATH:-state/proxy-costs.db}
+      # Optional: OTLP/HTTP collector base URL, e.g. http://otel-collector:4318
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-ollama-gateway}
+    volumes:
+      # Only needed for the one-time usage DB replay; safe to drop afterwards.
+      - proxy_data:/app/state
+    depends_on:
+      - ollama
+
+volumes:
+  ollama_data:
+  proxy_data:
