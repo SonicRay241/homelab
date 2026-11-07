@@ -61,8 +61,7 @@ services:
     depends_on:
       - ollama
     networks:
-      dokploy-network:
-        external: true
+      - dokploy-network
 
 volumes:
   ollama_data:
