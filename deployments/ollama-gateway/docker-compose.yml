@@ -61,6 +61,7 @@ services:
     depends_on:
       - ollama
     networks:
+      - default
       - dokploy-network
 
 volumes:
