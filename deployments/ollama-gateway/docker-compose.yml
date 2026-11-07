@@ -35,7 +35,7 @@ services:
       - hf.co/Seneelya/harrier-oss-v1-270m-GGUF:Q8_0
 
   proxy:
-    build: .
+    image: theta:5000/deployments/ollama-gateway:latest
     restart: unless-stopped
     expose:
       - "8080"
