@@ -16,32 +16,44 @@ import { BatchSpanProcessor, NodeTracerProvider } from "@opentelemetry/sdk-trace
 import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
 import type { OtelConfig } from "./config.ts";
 
+export type TokenUsage = {
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  cached_input_tokens: number | null;
+};
+
 export type RequestTelemetry = {
   span: Span;
   /** Ends the span and records the request metric exactly once. */
   finish(status: number, attributes?: Record<string, string | number | boolean>): void;
   /** Marks the span as failed before it ends. */
   fail(err: unknown): void;
-  recordUsage(usage: { model: string; input_tokens: number; output_tokens: number; cached_input_tokens: number | null }): void;
+  recordUsage(usage: TokenUsage): void;
 };
 
-export type ReplayRecord = {
+export type ReplayRecord = TokenUsage & {
+  id: number;
   timestamp: string;
   date: string;
-  model: string;
-  input_tokens: number;
-  output_tokens: number;
-  cached_input_tokens: number | null;
   endpoint: string;
   key_hash: string;
 };
 
+export type ReplayOptions = {
+  /**
+   * Keep the row's original start time. Off by default because backends reject or hide spans outside
+   * their ingestion/retention window; the original time is always preserved in `usage.timestamp`.
+   */
+  preserveTimestamps?: boolean;
+};
+
 export type Telemetry = {
-  /** False when no OTLP endpoint is configured; replay migration is skipped in that case. */
+  /** False when no OTLP endpoint is configured; replay/backfill is skipped in that case. */
   enabled: boolean;
   request(method: string, route: string, path: string, attributes?: Record<string, string | number>): RequestTelemetry;
-  /** Emits an already-timestamped span for a historical usage row. */
-  replay(record: ReplayRecord): void;
+  /** Emits one span and token counters for a historical usage row. */
+  replay(record: ReplayRecord, options?: ReplayOptions): void;
   forceFlush(): Promise<void>;
   shutdown(): Promise<void>;
 };
@@ -52,7 +64,7 @@ function setupOtel(cfg: OtelConfig) {
   const tracerProvider = new NodeTracerProvider({
     resource,
     spanProcessors: [
-      new BatchSpanProcessor(new OTLPTraceExporter({ url: `${cfg.endpoint}/v1/traces` })),
+      new BatchSpanProcessor(new OTLPTraceExporter({ url: `${cfg.endpoint}/v1/traces`, timeoutMillis: 5000 })),
     ],
   });
   tracerProvider.register();
@@ -61,7 +73,7 @@ function setupOtel(cfg: OtelConfig) {
     resource,
     readers: [
       new PeriodicExportingMetricReader({
-        exporter: new OTLPMetricExporter({ url: `${cfg.endpoint}/v1/metrics` }),
+        exporter: new OTLPMetricExporter({ url: `${cfg.endpoint}/v1/metrics`, timeoutMillis: 5000 }),
         exportIntervalMillis: 15_000,
       }),
     ],
@@ -83,6 +95,20 @@ export function createTelemetry(cfg: OtelConfig | null): Telemetry {
     unit: "ms",
   });
   const tokens: Counter = meter.createCounter("proxy.tokens", { description: "Tokens attributed to upstream responses" });
+
+  const addTokenCounts = (usage: TokenUsage, extra: Record<string, string | number | boolean>) => {
+    const base = { model: usage.model, ...extra };
+    if (usage.input_tokens > 0) tokens.add(usage.input_tokens, { ...base, "gen_ai.token.type": "input" });
+    if (usage.output_tokens > 0) tokens.add(usage.output_tokens, { ...base, "gen_ai.token.type": "output" });
+    if (usage.cached_input_tokens) tokens.add(usage.cached_input_tokens, { ...base, "gen_ai.token.type": "cached" });
+  };
+
+  const usageAttributes = (usage: TokenUsage) => ({
+    "gen_ai.request.model": usage.model,
+    "gen_ai.usage.input_tokens": usage.input_tokens,
+    "gen_ai.usage.output_tokens": usage.output_tokens,
+    ...(usage.cached_input_tokens === null ? {} : { "gen_ai.usage.cached_input_tokens": usage.cached_input_tokens }),
+  });
 
   return {
     enabled: sdk !== null,
@@ -121,42 +147,37 @@ export function createTelemetry(cfg: OtelConfig | null): Telemetry {
         },
 
         recordUsage(usage) {
-          const base = { model: usage.model };
-          if (usage.input_tokens > 0) tokens.add(usage.input_tokens, { ...base, "gen_ai.token.type": "input" });
-          if (usage.output_tokens > 0) tokens.add(usage.output_tokens, { ...base, "gen_ai.token.type": "output" });
-          if (usage.cached_input_tokens) tokens.add(usage.cached_input_tokens, { ...base, "gen_ai.token.type": "cached" });
-          span.setAttributes({
-            "gen_ai.request.model": usage.model,
-            "gen_ai.usage.input_tokens": usage.input_tokens,
-            "gen_ai.usage.output_tokens": usage.output_tokens,
-            ...(usage.cached_input_tokens === null ? {} : { "gen_ai.usage.cached_input_tokens": usage.cached_input_tokens }),
-          });
+          addTokenCounts(usage, {});
+          span.setAttributes(usageAttributes(usage));
         },
       };
 
       return request;
     },
 
-    replay(record) {
+    replay(record, options = {}) {
+      const original = new Date(record.timestamp);
+      const preserve = options.preserveTimestamps === true && !Number.isNaN(original.getTime());
       const attributes = {
         "proxy.replay": true,
         "http.route": record.endpoint,
         "proxy.key_hash": record.key_hash,
-        "gen_ai.request.model": record.model,
-        "gen_ai.usage.input_tokens": record.input_tokens,
-        "gen_ai.usage.output_tokens": record.output_tokens,
-        ...(record.cached_input_tokens === null ? {} : { "gen_ai.usage.cached_input_tokens": record.cached_input_tokens }),
+        "usage.row_id": record.id,
+        "usage.timestamp": record.timestamp,
         "usage.date": record.date,
+        ...usageAttributes(record),
       };
 
-      const timestamp = new Date(record.timestamp);
-      if (Number.isNaN(timestamp.getTime())) {
-        tracer.startSpan(`usage.replay ${record.endpoint}`, { kind: SpanKind.INTERNAL, attributes }).end();
-        return;
-      }
-      tracer
-        .startSpan(`usage.replay ${record.endpoint}`, { kind: SpanKind.INTERNAL, attributes, startTime: timestamp })
-        .end(timestamp);
+      // Backends enforce ingestion windows: a span stamped months ago is rejected or never queried.
+      // Counters cannot be backdated either, so they are attributed to replay time and tagged.
+      const span = tracer.startSpan(`usage.replay ${record.endpoint}`, {
+        kind: SpanKind.INTERNAL,
+        attributes,
+        ...(preserve ? { startTime: original } : {}),
+      });
+      span.end(preserve ? original : undefined);
+
+      addTokenCounts(record, { "proxy.replayed": true });
     },
 
     async forceFlush() {

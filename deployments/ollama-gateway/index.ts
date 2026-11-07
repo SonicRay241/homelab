@@ -1,7 +1,7 @@
 import { createInfisicalClient } from "./src/auth/infisical.ts";
 import { TokenRegistry } from "./src/auth/tokens.ts";
 import { loadConfig } from "./src/config.ts";
-import { migrateLegacyUsage } from "./src/migrate.ts";
+import { replayLegacyUsage } from "./src/migrate.ts";
 import { createServer } from "./src/server.ts";
 import { createTelemetry } from "./src/telemetry.ts";
 
@@ -9,7 +9,7 @@ const config = loadConfig();
 const telemetry = createTelemetry(config.otel);
 const registry = new TokenRegistry(createInfisicalClient(config.infisical), config.refreshMs);
 
-await migrateLegacyUsage(config.legacyDbPath, telemetry);
+await replayLegacyUsage(config.legacyDbPath, telemetry);
 await registry.start();
 
 const server = createServer({ config, registry, telemetry });

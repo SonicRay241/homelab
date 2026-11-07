@@ -15,7 +15,7 @@ export type OtelConfig = {
 export type Config = {
   port: number;
   ollamaUrl: string;
-  /** Old SQLite usage file: replayed to OTLP once at startup, then renamed `.migrated`. */
+  /** Legacy SQLite usage file: replayed to OTLP on startup when OTEL is configured. */
   legacyDbPath: string;
   loggingDisabled: boolean;
   refreshMs: number;
@@ -37,9 +37,16 @@ function optional(env: Record<string, string | undefined>, key: string, fallback
   return value || fallback;
 }
 
-export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
-  const otelEndpoint = env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim();
+export function loadOtelConfig(env: Record<string, string | undefined> = process.env): OtelConfig | null {
+  const endpoint = env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim();
+  if (asBool(env.OTEL_SDK_DISABLED) || !endpoint) return null;
+  return {
+    endpoint: endpoint.replace(/\/+$/, ""),
+    serviceName: optional(env, "OTEL_SERVICE_NAME", "ollama-gateway"),
+  };
+}
 
+export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
   return {
     port: Number.parseInt(optional(env, "PORT", "8080"), 10),
     ollamaUrl: optional(env, "OLLAMA_URL", "http://ollama:11434").replace(/\/+$/, ""),
@@ -54,9 +61,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       environment: required(env, "INFISICAL_ENV"),
       secretPath: optional(env, "INFISICAL_SECRET_PATH", "/"),
     },
-    otel:
-      asBool(env.OTEL_SDK_DISABLED) || !otelEndpoint
-        ? null
-        : { endpoint: otelEndpoint.replace(/\/+$/, ""), serviceName: optional(env, "OTEL_SERVICE_NAME", "ollama-gateway") },
+    otel: loadOtelConfig(env),
   };
 }

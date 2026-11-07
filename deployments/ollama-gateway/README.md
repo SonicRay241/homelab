@@ -32,7 +32,7 @@ gateway answers `503` rather than running open.
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | no | – | OTLP/HTTP base URL; telemetry is off when unset |
 | `OTEL_SERVICE_NAME` | no | `ollama-gateway` | `service.name` resource attribute |
 | `OTEL_SDK_DISABLED` | no | – | `1`/`true` turns telemetry off explicitly |
-| `DB_PATH` | no | `state/proxy-costs.db` | Legacy usage DB, replayed once at startup |
+| `DB_PATH` | no | `state/proxy-costs.db` | Legacy usage DB, replayed on startup |
 | `LOGGING_DISABLED` | no | – | `1`/`true` disables usage capture and flag injection |
 
 ## Endpoints
@@ -53,14 +53,34 @@ chunk. The response is streamed through untouched; parsing happens after the las
   (`gen_ai.token.type=input|output|cached`).
 - Exported every 5s (spans) / 15s (metrics), flushed on `SIGTERM`.
 
-## Legacy usage DB
+## Legacy usage DB and backfill
 
-The previous SQLite cost log is replayed to OTLP on startup, before the server listens: one
-`usage.replay {endpoint}` span per row, carrying the original timestamp, model, token counts,
-endpoint and key hash. The file is renamed to `<DB_PATH>.migrated` (plus `-wal`/`-shm`) only after the
-replay flushes, so a failed export leaves it in place for the next boot. If OTEL is not configured the
-file is left untouched and a warning is logged. Once the `.migrated` file exists the `proxy_data`
-volume can be dropped.
+The old SQLite cost log is replayed to OTLP on startup, before the server listens. The source file is
+**never deleted or renamed**; progress is stored in `<source>.replayed.json` (`lastId`), so restarts
+resume after the last flushed batch instead of duplicating rows. If `<DB_PATH>` is missing, the newest
+`<DB_PATH>.migrated*` left by the old migrator is used.
+
+Each row becomes one `usage.replay {endpoint}` span plus `proxy.tokens` counter additions:
+
+- Spans are stamped at **replay time**, because backends reject or hide spans outside their
+  ingestion/retention window. The original values stay on the span as `usage.timestamp`,
+  `usage.date` and `usage.row_id`.
+- Counters are cumulative and cannot be backdated, so they are attributed to replay time and tagged
+  `proxy.replayed=true` to keep them separable from live traffic in dashboards.
+- Spans are flushed every 500 rows and the cursor advances only after each flush.
+
+If OTEL is not configured the file is left untouched and a warning is logged.
+
+Manual backfill (safe to re-run; requires `OTEL_EXPORTER_OTLP_ENDPOINT`):
+
+```sh
+bun run backfill                          # resume from the cursor
+bun run backfill -- --all                 # re-send every row (duplicates if already stored)
+bun run backfill -- --db path/to.db       # explicit source
+bun run backfill -- --all --preserve-timestamps   # keep original span times (self-hosted backends)
+```
+
+Inside the container: `docker compose run --rm proxy bun run /app/backfill.ts -- --all`.
 
 ## Development
 

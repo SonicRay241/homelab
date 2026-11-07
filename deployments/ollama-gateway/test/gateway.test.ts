@@ -1,12 +1,12 @@
 import { Database } from "bun:sqlite";
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import { createInfisicalClient } from "../src/auth/infisical.ts";
 import { TokenRegistry, hashToken } from "../src/auth/tokens.ts";
 import type { Config } from "../src/config.ts";
-import { migrateLegacyUsage } from "../src/migrate.ts";
+import { replayLegacyUsage } from "../src/migrate.ts";
 import { createServer } from "../src/server.ts";
 import { createTelemetry } from "../src/telemetry.ts";
 
@@ -266,44 +266,84 @@ function writeLegacyDb(path: string, rows: { timestamp: string; endpoint: string
   db.close();
 }
 
-test("replays a legacy usage DB to OTLP and moves it aside", async () => {
+test("replays a legacy usage DB to OTLP without deleting it", async () => {
   const legacyPath = join(stateDir, "legacy", "proxy-costs.db");
   const rows = [
-    { timestamp: "2026-01-02T03:04:05.000Z", endpoint: "/api/chat", cached: null },
-    { timestamp: "2026-01-03T04:05:06.000Z", endpoint: "/api/generate", cached: 3 },
+    { timestamp: "2025-01-02T03:04:05.000Z", endpoint: "/api/chat", cached: null },
+    { timestamp: "2025-01-03T04:05:06.000Z", endpoint: "/api/generate", cached: 3 },
   ];
   writeLegacyDb(legacyPath, rows);
 
-  await migrateLegacyUsage(legacyPath, telemetry);
+  const result = await replayLegacyUsage(legacyPath, telemetry);
+  expect(result?.replayed).toBe(2);
 
-  expect(existsSync(legacyPath)).toBe(false);
-  expect(existsSync(`${legacyPath}.migrated`)).toBe(true);
+  // Source and progress cursor stay in place; nothing is renamed.
+  expect(existsSync(legacyPath)).toBe(true);
+  expect(existsSync(`${legacyPath}.migrated`)).toBe(false);
+  expect(JSON.parse(readFileSync(`${legacyPath}.replayed.json`, "utf-8")).lastId).toBe(2);
 
-  const replays = exportedSpans().filter(span => span.name.startsWith("usage.replay "));
-  expect(replays.length).toBe(2);
+  const replays = () => exportedSpans().filter(span => span.name.startsWith("usage.replay "));
+  expect(replays().length).toBe(2);
 
-  const chat = replays.find(span => span.name === "usage.replay /api/chat")!;
+  const chat = replays().find(span => span.name === "usage.replay /api/chat")!;
   expect(attr(chat, "proxy.replay")?.boolValue).toBe(true);
   expect(strAttr(chat, "gen_ai.request.model")).toBe("legacy-model");
   expect(intAttr(chat, "gen_ai.usage.input_tokens")).toBe(20);
   expect(intAttr(chat, "gen_ai.usage.output_tokens")).toBe(4);
+  expect(intAttr(chat, "usage.row_id")).toBe(1);
+  expect(strAttr(chat, "usage.timestamp")).toBe(rows[0]!.timestamp);
   expect(attr(chat, "gen_ai.usage.cached_input_tokens")).toBeUndefined();
   expect(strAttr(chat, "proxy.key_hash")).toBe("legacykey");
-  expect(chat.startTimeUnixNano).toBe(String(BigInt(Date.parse(rows[0]!.timestamp)) * 1_000_000n));
 
-  const generate = replays.find(span => span.name === "usage.replay /api/generate")!;
+  // Spans are stamped at replay time so backends inside their ingestion window accept them.
+  const replayMs = Number(BigInt(chat.startTimeUnixNano!) / 1_000_000n);
+  expect(Math.abs(Date.now() - replayMs)).toBeLessThan(60_000);
+
+  const generate = replays().find(span => span.name === "usage.replay /api/generate")!;
   expect(intAttr(generate, "gen_ai.usage.cached_input_tokens")).toBe(3);
 
-  // The renamed file must not be replayed again.
-  await migrateLegacyUsage(legacyPath, telemetry);
-  expect(exportedSpans().filter(span => span.name.startsWith("usage.replay ")).length).toBe(2);
+  // Counters land at replay time and are tagged so dashboards can separate them from live traffic.
+  const metrics = JSON.stringify(otlp.metrics);
+  expect(metrics).toContain("proxy.replayed");
+  expect(metrics).toContain("legacy-model");
+
+  // A second run resumes from the cursor and emits nothing new.
+  const resumed = await replayLegacyUsage(legacyPath, telemetry);
+  expect(resumed?.replayed).toBe(0);
+  expect(replays().length).toBe(2);
+
+  // Forced backfill re-sends everything; optional original timestamps for backends that accept them.
+  const forced = await replayLegacyUsage(legacyPath, telemetry, { ignoreCursor: true, preserveTimestamps: true });
+  expect(forced?.replayed).toBe(2);
+  expect(replays().length).toBe(4);
+  const pinned = replays()
+    .filter(span => strAttr(span, "usage.timestamp") === rows[0]!.timestamp)
+    .at(-1)!;
+  expect(pinned.startTimeUnixNano).toBe(String(BigInt(Date.parse(rows[0]!.timestamp)) * 1_000_000n));
+});
+
+test("finds a .migrated file left by the old migrator", async () => {
+  const base = join(stateDir, "old-migrator", "proxy-costs.db");
+  writeLegacyDb(base, [{ timestamp: "2025-02-01T00:00:00.000Z", endpoint: "/api/chat", cached: null }]);
+  renameSync(base, `${base}.migrated`);
+
+  const result = await replayLegacyUsage(base, telemetry);
+
+  expect(result?.source).toBe(`${base}.migrated`);
+  expect(result?.replayed).toBe(1);
+  expect(existsSync(`${base}.migrated`)).toBe(true);
+
+  // Discovery must ignore the cursor JSON it just wrote next to the source.
+  const again = await replayLegacyUsage(base, telemetry);
+  expect(again?.source).toBe(`${base}.migrated`);
+  expect(again?.replayed).toBe(0);
 });
 
 test("leaves the legacy DB untouched when OTEL is disabled", async () => {
   const legacyPath = join(stateDir, "no-otel", "proxy-costs.db");
   writeLegacyDb(legacyPath, [{ timestamp: "2026-02-01T00:00:00.000Z", endpoint: "/api/chat", cached: null }]);
 
-  await migrateLegacyUsage(legacyPath, createTelemetry(null));
+  await replayLegacyUsage(legacyPath, createTelemetry(null));
 
   expect(existsSync(legacyPath)).toBe(true);
   expect(existsSync(`${legacyPath}.migrated`)).toBe(false);
