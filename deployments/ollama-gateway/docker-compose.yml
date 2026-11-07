@@ -60,6 +60,9 @@ services:
       - proxy_data:/app/state
     depends_on:
       - ollama
+    networks:
+      dokploy-network:
+        external: true
 
 volumes:
   ollama_data:
