@@ -23,7 +23,9 @@ const BASE: AssistantConfig = {
   modelIds: ["env-model", "env-alias"],
   contextWindow: 128_000,
   maxTokens: 8_192,
+  maxInputTokens: 0,
   dataDir: "/tmp/assistant-data",
+  agentsDir: "/tmp/assistant-agents",
   agentDir: "/tmp/assistant-agent",
   agentId: "default",
   infisical: {
@@ -47,17 +49,23 @@ describe("loadAgentOverrides", () => {
     expect(loadAgentOverrides(await agentDir())).toEqual({});
   });
 
-  it("reads apiUrl, apiKey and model", async () => {
+  it("reads apiUrl, apiKey, model and maxInputTokens", async () => {
     const dir = await agentDir(`
 apiUrl: https://other.example/v1/
 apiKey: sk-other
 model: other:cloud
+maxInputTokens: 9000
 `);
     expect(loadAgentOverrides(dir)).toEqual({
       apiUrl: "https://other.example/v1",
       apiKey: "sk-other",
       model: "other:cloud",
+      maxInputTokens: 9000,
     });
+  });
+
+  it("allows maxInputTokens: 0 to disable the limit per agent", async () => {
+    expect(loadAgentOverrides(await agentDir("maxInputTokens: 0\n"))).toEqual({ maxInputTokens: 0 });
   });
 
   it("treats comments and an empty file as no overrides", async () => {
@@ -65,11 +73,20 @@ model: other:cloud
     expect(loadAgentOverrides(await agentDir(""))).toEqual({});
   });
 
-  it("rejects unknown keys, non-strings and empty values", async () => {
+  it("rejects unknown keys, non-strings, empty values and invalid limits", async () => {
     await expect(async () => loadAgentOverrides(await agentDir("model: x\napi_key: y\n"))).toThrow("unknown key");
     await expect(async () => loadAgentOverrides(await agentDir("model: 42\n"))).toThrow("must be a string");
     await expect(async () => loadAgentOverrides(await agentDir('apiUrl: "   "\n'))).toThrow("must not be empty");
     await expect(async () => loadAgentOverrides(await agentDir("- a\n- b\n"))).toThrow("expected a YAML mapping");
+    await expect(async () => loadAgentOverrides(await agentDir("maxInputTokens: -1\n"))).toThrow(
+      "non-negative integer",
+    );
+    await expect(async () => loadAgentOverrides(await agentDir("maxInputTokens: 1.5\n"))).toThrow(
+      "non-negative integer",
+    );
+    await expect(async () => loadAgentOverrides(await agentDir('maxInputTokens: "100"\n'))).toThrow(
+      "non-negative integer",
+    );
   });
 
   it("reports invalid YAML with the file name", async () => {
@@ -84,6 +101,13 @@ describe("applyAgentOverrides", () => {
     expect(config.apiKey).toBe(BASE.apiKey);
     expect(config.modelId).toBe(BASE.modelId);
     expect(config.modelIds).toEqual(["env-model", "env-alias"]);
+    expect(config.maxInputTokens).toBe(0);
+  });
+
+  it("overrides the input token limit", () => {
+    const config = applyAgentOverrides(BASE, { maxInputTokens: 32_000 });
+    expect(config.maxInputTokens).toBe(32_000);
+    expect(BASE.maxInputTokens).toBe(0);
   });
 
   it("overrides backend credentials and replaces the advertised model", () => {

@@ -1,16 +1,14 @@
-import { applyAgentOverrides, loadAgentOverrides } from "./src/agent-config.ts";
+import { discoverAgents, resolveAgent, type AgentDefinition } from "./src/agents.ts";
 import { createInfisicalClient } from "./src/auth/infisical.ts";
 import { requestToken, UserRegistry } from "./src/auth/users.ts";
 import { loadConfig } from "./src/config.ts";
 import { isRecord } from "./src/guards.ts";
-import { buildModel } from "./src/model.ts";
 import { SseWriter } from "./src/openai.ts";
 import { getStoredResponse, RequestError, runResponse } from "./src/runner.ts";
 
 const baseConfig = loadConfig();
-const config = applyAgentOverrides(baseConfig, loadAgentOverrides(baseConfig.agentDir));
-const model = buildModel(config);
-const registry = new UserRegistry(createInfisicalClient(config.infisical), config.refreshMs, config.staticKeys);
+const agents = discoverAgents(baseConfig);
+const registry = new UserRegistry(createInfisicalClient(baseConfig.infisical), baseConfig.refreshMs, baseConfig.staticKeys);
 
 await registry.start();
 
@@ -33,16 +31,30 @@ function modelList(): Response {
   const created = Math.floor(Date.now() / 1_000);
   return json({
     object: "list",
-    data: config.modelIds.map((id) => ({ id, object: "model", created, owned_by: "pi-assistant" })),
+    data: agents.map((agent) => ({ id: agent.id, object: "model", created, owned_by: "pi-assistant" })),
   });
 }
 
-function streamResponse(userId: string, body: Record<string, unknown>, signal: AbortSignal): Response {
+function streamResponse(
+  agent: AgentDefinition,
+  requestedModel: string,
+  userId: string,
+  body: Record<string, unknown>,
+  signal: AbortSignal,
+): Response {
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const writer = new SseWriter(controller);
       try {
-        await runResponse({ config, model, userId, body, sse: writer, signal });
+        await runResponse({
+          config: agent.config,
+          model: agent.model,
+          requestedModel,
+          userId,
+          body,
+          sse: writer,
+          signal,
+        });
       } catch (error) {
         if (error instanceof RequestError) {
           writer.send("error", { code: error.code, message: error.message, param: null });
@@ -71,8 +83,8 @@ function streamResponse(userId: string, body: Record<string, unknown>, signal: A
 }
 
 const server = Bun.serve({
-  port: config.port,
-  hostname: config.hostname,
+  port: baseConfig.port,
+  hostname: baseConfig.hostname,
   maxRequestBodySize: 32 * 1024 * 1024,
   idleTimeout: 255,
   async fetch(request) {
@@ -81,7 +93,7 @@ const server = Bun.serve({
 
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
     if (path === "/health") {
-      return json({ ok: true, authReady: registry.ready, users: registry.size });
+      return json({ ok: true, authReady: registry.ready, users: registry.size, agents: agents.map((agent) => agent.id) });
     }
     if (path === "/") return json({ name: "pi-assistant", endpoints: ["/v1/responses", "/v1/models"] });
 
@@ -93,7 +105,7 @@ const server = Bun.serve({
     if (request.method === "GET" && (path === "/v1/models" || path === "/models")) return modelList();
     if (request.method === "GET" && path.startsWith("/v1/models/")) {
       const id = decodeURIComponent(path.slice("/v1/models/".length));
-      if (config.modelIds.includes(id)) {
+      if (agents.some((agent) => agent.id === id)) {
         return json({ id, object: "model", created: Math.floor(Date.now() / 1_000), owned_by: "pi-assistant" });
       }
       return apiError(`Unknown model ${id}`, 404, "model_not_found");
@@ -114,9 +126,30 @@ const server = Bun.serve({
         return apiError("Request body must be valid JSON", 400, "invalid_json");
       }
       if (!isRecord(parsed)) return apiError("Request body must be a JSON object", 400, "invalid_request");
-      if (parsed.stream === true) return streamResponse(userId, parsed, request.signal);
+
+      const agent = resolveAgent(agents, baseConfig.agentId, parsed.model);
+      if (!agent) {
+        return apiError(
+          `Unknown model ${JSON.stringify(parsed.model)}. Available agents: ${agents.map((entry) => entry.id).join(", ")}`,
+          404,
+          "model_not_found",
+        );
+      }
+      const requestedModel =
+        typeof parsed.model === "string" && parsed.model.trim() ? parsed.model.trim() : agent.id;
+
+      if (parsed.stream === true) return streamResponse(agent, requestedModel, userId, parsed, request.signal);
       try {
-        return json(await runResponse({ config, model, userId, body: parsed, signal: request.signal }));
+        return json(
+          await runResponse({
+            config: agent.config,
+            model: agent.model,
+            requestedModel,
+            userId,
+            body: parsed,
+            signal: request.signal,
+          }),
+        );
       } catch (error) {
         if (error instanceof RequestError) return apiError(error.message, error.status, error.code);
         console.error("response failed", error);
@@ -129,8 +162,8 @@ const server = Bun.serve({
 });
 
 console.log(
-  `pi-assistant listening on http://${server.hostname}:${server.port} model=${config.modelId} ` +
-    `auth=${registry.ready ? "ready" : "pending"} users=${registry.size} refresh=${config.refreshMs}ms`,
+  `pi-assistant listening on http://${server.hostname}:${server.port} agents=${agents.map((agent) => agent.id).join(",")} ` +
+    `auth=${registry.ready ? "ready" : "pending"} users=${registry.size} refresh=${baseConfig.refreshMs}ms`,
 );
 
 let stopping = false;

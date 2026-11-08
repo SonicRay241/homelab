@@ -22,7 +22,11 @@ export interface AssistantConfig {
   modelIds: string[];
   contextWindow: number;
   maxTokens: number;
+  /** Estimated input-token cap for one request; 0 disables the check. */
+  maxInputTokens: number;
   dataDir: string;
+  /** Root directory holding one subdirectory per selectable agent. */
+  agentsDir: string;
   agentDir: string;
   agentId: string;
   infisical: InfisicalConfig;
@@ -50,6 +54,14 @@ function intEnv(name: string, fallback: number): number {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) throw new Error(`${name} must be a positive number`);
   return Math.floor(n);
+}
+
+function nonNegativeIntEnv(name: string, fallback: number): number {
+  const value = process.env[name]?.trim();
+  if (!value) return fallback;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 0) throw new Error(`${name} must be a non-negative integer`);
+  return n;
 }
 
 /**
@@ -122,6 +134,13 @@ export function loadConfig(): AssistantConfig {
     .filter(Boolean);
   const modelIds = Array.from(new Set([modelId, ...aliases]));
 
+  const agentId = process.env.AGENT_ID?.trim() || "default";
+  if (!USER_ID.test(agentId)) throw new Error(`Invalid AGENT_ID ${JSON.stringify(agentId)}`);
+  const agentsDir = resolve(ROOT, process.env.AGENTS_DIR?.trim() || "agents");
+  const agentDir = process.env.AGENT_DIR?.trim()
+    ? resolve(ROOT, process.env.AGENT_DIR.trim())
+    : resolve(agentsDir, agentId);
+
   return {
     port: intEnv("PORT", 8787),
     hostname: process.env.BIND_HOST?.trim() || "0.0.0.0",
@@ -131,9 +150,11 @@ export function loadConfig(): AssistantConfig {
     modelIds,
     contextWindow: intEnv("CONTEXT_WINDOW", 128_000),
     maxTokens: intEnv("MAX_TOKENS", 8_192),
+    maxInputTokens: nonNegativeIntEnv("MAX_INPUT_TOKENS", 0),
     dataDir: resolve(ROOT, process.env.DATA_DIR?.trim() || "data"),
-    agentDir: resolve(ROOT, process.env.AGENT_DIR?.trim() || "agents/default"),
-    agentId: process.env.AGENT_ID?.trim() || "default",
+    agentsDir,
+    agentDir,
+    agentId,
     infisical: {
       baseUrl: required("INFISICAL_BASE_URL").replace(/\/+$/, ""),
       clientId: required("INFISICAL_CLIENT_ID"),

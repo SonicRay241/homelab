@@ -38,3 +38,6 @@ data
 
 # per-agent config overrides (may contain API keys)
 agents/*/config.yaml
+
+# root .gitignore ignores **/.env*; keep the committed template
+!.env.example

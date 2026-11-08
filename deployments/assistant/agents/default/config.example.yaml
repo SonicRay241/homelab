@@ -7,3 +7,4 @@
 # apiUrl: https://ollama.example.com/v1
 # apiKey: sk-...
 # model: beam:cloud
+# maxInputTokens: 100000

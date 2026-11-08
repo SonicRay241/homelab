@@ -14,6 +14,7 @@ import type { AssistantConfig } from "./config.ts";
 import { isRecord } from "./guards.ts";
 import { MemoryStore, MEMORY_INSTRUCTIONS } from "./memory.ts";
 import { isServerToolName, memoryTool, namespaceServerTool, SERVER_TOOL_INSTRUCTIONS } from "./tools.ts";
+import { estimateInputTokens } from "./tokens.ts";
 import {
   collectToolNames,
   convertInput,
@@ -41,6 +42,7 @@ export class RequestError extends Error {
 interface StoredResponse {
   id: string;
   userId: string;
+  agentId: string;
   baseSystemPrompt: string;
   messages: Message[];
   response: Record<string, unknown>;
@@ -156,6 +158,8 @@ function clientToolStub(tool: ClientTool): AgentTool {
 export interface RunOptions {
   config: AssistantConfig;
   model: Model<"openai-completions">;
+  /** Agent id or backend alias supplied by the client; echoed in the response. */
+  requestedModel: string;
   userId: string;
   body: Record<string, unknown>;
   sse?: SseWriter;
@@ -179,11 +183,7 @@ interface Normalized {
   rawInstructions: string;
 }
 
-function normalize(config: AssistantConfig, body: Record<string, unknown>): Normalized {
-  const requestedModel = typeof body.model === "string" ? body.model : config.modelId;
-  if (!config.modelIds.includes(requestedModel)) {
-    throw new RequestError(`Unknown model ${JSON.stringify(requestedModel)}. Available: ${config.modelIds.join(", ")}`, 404, "model_not_found");
-  }
+function normalize(config: AssistantConfig, body: Record<string, unknown>, requestedModel: string): Normalized {
   if (body.previous_response_id !== undefined && body.previous_response_id !== null && typeof body.previous_response_id !== "string") {
     throw new RequestError("previous_response_id must be a string or null");
   }
@@ -401,11 +401,14 @@ class ResponseEmitter {
  * are returned as function_call output items for the caller to execute.
  */
 export async function runResponse(options: RunOptions): Promise<Record<string, unknown>> {
-  const { config, model, userId, body } = options;
-  const normalized = normalize(config, body);
+  const { config, model, requestedModel, userId, body } = options;
+  const normalized = normalize(config, body, requestedModel);
 
   const previous = normalized.previousResponseId ? responses.get(normalized.previousResponseId) : undefined;
-  if (normalized.previousResponseId && (!previous || previous.userId !== userId)) {
+  if (
+    normalized.previousResponseId &&
+    (!previous || previous.userId !== userId || previous.agentId !== config.agentId)
+  ) {
     throw new RequestError(`Unknown previous_response_id ${JSON.stringify(normalized.previousResponseId)}`, 404, "not_found");
   }
 
@@ -436,6 +439,15 @@ export async function runResponse(options: RunOptions): Promise<Record<string, u
   ];
   const clientToolNames = new Set(normalized.clientTools.map((tool) => tool.name));
   const tools: AgentTool[] = [...serverTools, ...normalized.clientTools.map(clientToolStub)];
+
+  const estimatedInputTokens = estimateInputTokens(systemPrompt, [...history, ...converted.messages], tools);
+  if (config.maxInputTokens > 0 && estimatedInputTokens > config.maxInputTokens) {
+    throw new RequestError(
+      `Estimated input is ${estimatedInputTokens} tokens, over the configured limit of ${config.maxInputTokens}`,
+      400,
+      "context_length_exceeded",
+    );
+  }
 
   const id = newId("resp");
   const emitter = new ResponseEmitter({
@@ -502,6 +514,7 @@ export async function runResponse(options: RunOptions): Promise<Record<string, u
     responses.set(id, {
       id,
       userId,
+      agentId: config.agentId,
       baseSystemPrompt,
       messages: storedMessages,
       response,
