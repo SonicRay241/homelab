@@ -15,12 +15,14 @@ client ──Bearer sk-...──> assistant :8787
 
 - `POST /v1/responses` with `stream: true|false`.
 - **Server-side tools**: the pi agent executes tools inline and keeps looping until it answers.
-  The built-in server tool is `memory`; server tools are always available.
+  Server tools are exposed to the model as `server_<name>` (for example `server_memory`); the
+  convention is also stated in the system prompt.
 - **Client-side tools**: function tools in the request are returned as `function_call` output items
-  (`call_id`, `name`, `arguments`). The caller executes them and sends
+  (`call_id`, `name`, `arguments`) under their original names. The caller executes them and sends
   `function_call_output` items on the next request. A batch containing a client tool stops the
   server loop immediately; server tool calls in the same batch still execute and stay in the stored
-  transcript, but are not exposed as output items.
+  transcript, but are not exposed as output items. Client tool names starting with `server_` are
+  rejected with `400` because that prefix is reserved for server tools.
 - `previous_response_id` replays the stored pi transcript (per user). Responses are kept in memory:
   TTL 7 days, max 500, lost on restart.
 - Hermes-style persistent memory per user, with `MEMORY.md` (agent notes, 2200 chars) and
@@ -126,7 +128,7 @@ Streaming emits the Responses SSE sequence (`response.created`, `response.in_pro
 
 Paths: `data/users/<user>/agents/<agent>/memories/{MEMORY.md,USER.md}`.
 
-The model calls `memory` with `target` (`memory` or `user`), `action` (`add`, `patch`, `remove`,
+The model calls `server_memory` with `target` (`memory` or `user`), `action` (`add`, `patch`, `remove`,
 `batch`), `content`, `old_text`, `operations`. Entries are separated by a line containing only `§`.
 Writes are atomic and serialized; the limit is checked on the batch result, so one batch can free
 space and add in the same call. Duplicate adds are no-ops, ambiguous `old_text` matches fail,
@@ -139,10 +141,15 @@ life of a conversation; tool results always show live entries and usage.
   resend full input instead of relying on `previous_response_id`.
 - Model input is text-only. `input_image` parts are accepted only as `data:` URLs; remote image URLs
   are dropped (no server-side fetch).
-- Server tool names win over client tools with the same name.
-- Add server tools in `src/tools.ts` and register them in `src/runner.ts` (`serverTools`). Add them
-  only if you trust the model with their side effects; there are no file/shell tools by default.
-- `bun test` covers memory semantics, Responses input conversion, and the Infisical key registry;
-  `bun run typecheck` for types. Tests live in `test/`.
+- Server tools use the reserved `server_` prefix; a client tool with the same base name (for example
+  `bash`) is a different tool and both are available. Client tool names starting with `server_` are
+  rejected.
+- Add server tools in `src/tools.ts` and wrap them with `namespaceServerTool` in `src/runner.ts`
+  (`serverTools`). The wrapper exposes them as `server_<name>`, so a client `bash` and a server
+  `bash` remain distinct. Add tools only if you trust the model with their side effects; there are
+  no file/shell tools by default.
+- `bun test` covers memory semantics, Responses input conversion, the Infisical key registry,
+  agent config overrides, and server tool namespacing; `bun run typecheck` for types. Tests live in
+  `test/`.
 - Client keys are hashed for lookup and never logged. Infisical failures keep the last known good
   key set; an empty initial load keeps the API at 503 instead of running open.

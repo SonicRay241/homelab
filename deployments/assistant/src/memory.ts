@@ -256,7 +256,7 @@ export class MemoryStore {
 }
 
 export const MEMORY_INSTRUCTIONS = `# Memory
-You have a \`memory\` tool backed by two small, persistent stores that are injected into your system prompt at the start of each conversation:
+You have a \`server_memory\` tool backed by two small, persistent stores that are injected into your system prompt at the start of each conversation:
 - target "memory": your own notes (environment facts, conventions, lessons, completed work). Limit 2200 chars.
 - target "user": the user's profile (name, role, timezone, preferences, communication style). Limit 1375 chars.
 

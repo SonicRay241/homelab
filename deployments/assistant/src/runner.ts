@@ -13,7 +13,7 @@ import {
 import type { AssistantConfig } from "./config.ts";
 import { isRecord } from "./guards.ts";
 import { MemoryStore, MEMORY_INSTRUCTIONS } from "./memory.ts";
-import { memoryTool } from "./tools.ts";
+import { isServerToolName, memoryTool, namespaceServerTool, SERVER_TOOL_INSTRUCTIONS } from "./tools.ts";
 import {
   collectToolNames,
   convertInput,
@@ -83,7 +83,7 @@ export function memoryDirectory(config: AssistantConfig, userId: string): string
 
 const DEFAULT_SOUL = `You are a helpful, direct assistant running inside a pi agent harness.
 Prefer concise, factual answers. Use the tools you are given when they help.
-When the user tells you a durable preference or fact about themselves, save it to memory.`;
+When the user tells you a durable preference or fact about themselves, save it with the \`server_memory\` tool.`;
 
 async function loadSoul(config: AssistantConfig): Promise<string> {
   try {
@@ -99,6 +99,7 @@ async function buildBaseSystemPrompt(config: AssistantConfig, userId: string): P
   const snapshot = await store.snapshot();
   return [
     await loadSoul(config),
+    SERVER_TOOL_INSTRUCTIONS,
     store.render("memory", snapshot.memory),
     store.render("user", snapshot.user),
     MEMORY_INSTRUCTIONS,
@@ -421,11 +422,20 @@ export async function runResponse(options: RunOptions): Promise<Record<string, u
     ? `${baseSystemPrompt}\n\n# Client instructions\n${instructions}`
     : baseSystemPrompt;
 
-  const serverTools: AgentTool[] = [memoryTool(new MemoryStore(memoryDirectory(config, userId)))];
-  const serverNames = new Set(serverTools.map((tool) => tool.name));
-  const exposedClientTools = normalized.clientTools.filter((tool) => !serverNames.has(tool.name));
-  const clientToolNames = new Set(exposedClientTools.map((tool) => tool.name));
-  const tools: AgentTool[] = [...serverTools, ...exposedClientTools.map(clientToolStub)];
+  const reservedClientTools = normalized.clientTools.filter((tool) => isServerToolName(tool.name));
+  if (reservedClientTools.length) {
+    throw new RequestError(
+      `Client tool names must not start with the reserved prefix: ${reservedClientTools.map((tool) => tool.name).join(", ")}`,
+      400,
+      "invalid_tool_name",
+    );
+  }
+
+  const serverTools: AgentTool[] = [
+    namespaceServerTool(memoryTool(new MemoryStore(memoryDirectory(config, userId)))),
+  ];
+  const clientToolNames = new Set(normalized.clientTools.map((tool) => tool.name));
+  const tools: AgentTool[] = [...serverTools, ...normalized.clientTools.map(clientToolStub)];
 
   const id = newId("resp");
   const emitter = new ResponseEmitter({

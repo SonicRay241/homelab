@@ -1,6 +1,23 @@
 import type { AgentTool } from "@mariozechner/pi-agent-core";
-import { StringEnum, Type, type Static } from "@mariozechner/pi-ai";
+import { StringEnum, Type, type Static, type TSchema } from "@mariozechner/pi-ai";
 import { MemoryError, type MemoryStore, type MemoryTarget } from "./memory.ts";
+
+/** Client tool names are rejected if they use this prefix, so collisions cannot happen. */
+export const SERVER_TOOL_PREFIX = "server_";
+
+export function isServerToolName(name: string): boolean {
+  return name.startsWith(SERVER_TOOL_PREFIX);
+}
+
+/** Server tools are advertised to the model as `server_<name>`; client tools keep their names. */
+export function namespaceServerTool<TParameters extends TSchema, TDetails>(
+  tool: AgentTool<TParameters, TDetails>,
+): AgentTool<TParameters, TDetails> {
+  return { ...tool, name: `${SERVER_TOOL_PREFIX}${tool.name}` };
+}
+
+export const SERVER_TOOL_INSTRUCTIONS = `# Server tools
+Tool names starting with \`${SERVER_TOOL_PREFIX}\` are executed by this server. Client-provided tools keep their original names and are executed by the caller; the \`${SERVER_TOOL_PREFIX}\` prefix is reserved for server tools.`;
 
 const OperationSchema = Type.Object({
   action: StringEnum(["add", "patch", "remove"] as const, {
