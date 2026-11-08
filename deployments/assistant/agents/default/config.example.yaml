@@ -8,3 +8,5 @@
 # apiKey: sk-...
 # model: beam:cloud
 # maxInputTokens: 100000
+# compactionThreshold: 0.75
+# compactionKeepTurns: 6

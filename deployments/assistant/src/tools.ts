@@ -1,6 +1,7 @@
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { StringEnum, Type, type Static, type TSchema } from "@mariozechner/pi-ai";
 import { MemoryError, type MemoryStore, type MemoryTarget } from "./memory.ts";
+import type { SessionStore } from "./sessions.ts";
 
 /** Client tool names are rejected if they use this prefix, so collisions cannot happen. */
 export const SERVER_TOOL_PREFIX = "server_";
@@ -17,7 +18,7 @@ export function namespaceServerTool<TParameters extends TSchema, TDetails>(
 }
 
 export const SERVER_TOOL_INSTRUCTIONS = `# Server tools
-Tool names starting with \`${SERVER_TOOL_PREFIX}\` are executed by this server. Client-provided tools keep their original names and are executed by the caller; the \`${SERVER_TOOL_PREFIX}\` prefix is reserved for server tools.`;
+Tool names starting with \`${SERVER_TOOL_PREFIX}\` are executed by this server. Client-provided tools keep their original names and are executed by the caller; the \`${SERVER_TOOL_PREFIX}\` prefix is reserved for server tools. \`server_session_search\` searches this user's persisted conversation history.`;
 
 const OperationSchema = Type.Object({
   action: StringEnum(["add", "patch", "remove"] as const, {
@@ -77,6 +78,29 @@ export function memoryTool(store: MemoryStore): AgentTool<typeof MemoryParams> {
         }
         throw error;
       }
+    },
+  };
+}
+
+const SessionSearchParams = Type.Object({
+  query: Type.String({ description: "Case-insensitive text to find in past conversations" }),
+  response_id: Type.Optional(Type.String({ description: "Restrict the search to one response id" })),
+  limit: Type.Optional(Type.Number({ description: "Maximum results (default 5, max 20)" })),
+});
+
+type SessionSearchParams = Static<typeof SessionSearchParams>;
+
+export function sessionSearchTool(store: SessionStore, userHash: string): AgentTool<typeof SessionSearchParams> {
+  return {
+    name: "session_search",
+    label: "Session Search",
+    description:
+      "Search this user's persisted past conversations. Returns response_id, timestamp, and a short snippet. " +
+      "Use it when the user refers to something discussed earlier that is no longer in context.",
+    parameters: SessionSearchParams,
+    execute: async (_toolCallId, params) => {
+      const results = store.search(userHash, params.query, params.limit ?? 5, params.response_id);
+      return result({ success: true, query: params.query, results });
     },
   };
 }

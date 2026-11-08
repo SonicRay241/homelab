@@ -4,13 +4,22 @@ import type { AssistantConfig } from "./config.ts";
 import { isRecord } from "./guards.ts";
 
 export const AGENT_CONFIG_FILE = "config.yaml";
-const ALLOWED_KEYS = new Set(["apiUrl", "apiKey", "model", "maxInputTokens"]);
+const ALLOWED_KEYS = new Set([
+  "apiUrl",
+  "apiKey",
+  "model",
+  "maxInputTokens",
+  "compactionThreshold",
+  "compactionKeepTurns",
+]);
 
 export interface AgentOverrides {
   apiUrl?: string;
   apiKey?: string;
   model?: string;
   maxInputTokens?: number;
+  compactionThreshold?: number;
+  compactionKeepTurns?: number;
 }
 
 function stringValue(value: unknown, key: string, file: string): string {
@@ -57,6 +66,20 @@ export function loadAgentOverrides(agentDir: string): AgentOverrides {
     }
     overrides.maxInputTokens = value;
   }
+  if ("compactionThreshold" in parsed) {
+    const value = parsed.compactionThreshold;
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) {
+      throw new Error(`${file}: compactionThreshold must be between 0 and 1`);
+    }
+    overrides.compactionThreshold = value;
+  }
+  if ("compactionKeepTurns" in parsed) {
+    const value = parsed.compactionKeepTurns;
+    if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+      throw new Error(`${file}: compactionKeepTurns must be a positive integer`);
+    }
+    overrides.compactionKeepTurns = value;
+  }
   return overrides;
 }
 
@@ -69,6 +92,8 @@ export function applyAgentOverrides(config: AssistantConfig, overrides: AgentOve
     apiKey: overrides.apiKey ?? config.apiKey,
     modelId,
     maxInputTokens: overrides.maxInputTokens ?? config.maxInputTokens,
+    compactionThreshold: overrides.compactionThreshold ?? config.compactionThreshold,
+    compactionKeepTurns: overrides.compactionKeepTurns ?? config.compactionKeepTurns,
     // A model override replaces the advertised list; env aliases belong to the default model.
     modelIds: overrides.model ? [modelId] : config.modelIds,
   };

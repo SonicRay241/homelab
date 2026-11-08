@@ -31,6 +31,8 @@ function baseConfig(agentsDir: string, agentDir: string): AssistantConfig {
     contextWindow: 128_000,
     maxTokens: 8_192,
     maxInputTokens: 0,
+    compactionThreshold: 0.75,
+    compactionKeepTurns: 6,
     dataDir: "/tmp/assistant-data",
     agentsDir,
     agentDir,

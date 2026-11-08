@@ -11,10 +11,12 @@ import {
   type ToolCall,
 } from "@mariozechner/pi-ai";
 import type { AssistantConfig } from "./config.ts";
+import { compactMessages, compactionTokenThreshold, createLlmSummarizer } from "./compaction.ts";
 import { isRecord } from "./guards.ts";
 import { MemoryStore, MEMORY_INSTRUCTIONS } from "./memory.ts";
-import { isServerToolName, memoryTool, namespaceServerTool, SERVER_TOOL_INSTRUCTIONS } from "./tools.ts";
-import { estimateInputTokens } from "./tokens.ts";
+import { type SessionStore, messagesToSearchText } from "./sessions.ts";
+import { isServerToolName, memoryTool, namespaceServerTool, SERVER_TOOL_INSTRUCTIONS, sessionSearchTool } from "./tools.ts";
+import { createWorkspaceTools, WORKSPACE_INSTRUCTIONS, workspaceDirectory } from "./workspace.ts";
 import {
   collectToolNames,
   convertInput,
@@ -39,48 +41,12 @@ export class RequestError extends Error {
   }
 }
 
-interface StoredResponse {
-  id: string;
-  userId: string;
-  agentId: string;
-  baseSystemPrompt: string;
-  messages: Message[];
-  response: Record<string, unknown>;
-  createdAt: number;
+export function memoryDirectory(config: AssistantConfig, userId: string): string {
+  return join(config.dataDir, "users", userId, "agents", config.agentId, "memories");
 }
-
-const STORE_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
-const STORE_MAX = 500;
-const responses = new Map<string, StoredResponse>();
 
 function newId(prefix: string): string {
   return `${prefix}_${randomUUID().replaceAll("-", "")}`;
-}
-
-function pruneStore(): void {
-  const cutoff = Date.now() - STORE_TTL_MS;
-  for (const [id, entry] of responses) {
-    if (entry.createdAt < cutoff) responses.delete(id);
-  }
-  while (responses.size > STORE_MAX) {
-    const oldest = responses.keys().next().value;
-    if (oldest === undefined) break;
-    responses.delete(oldest);
-  }
-}
-
-export function getStoredResponse(id: string, userId: string): Record<string, unknown> | undefined {
-  const entry = responses.get(id);
-  if (!entry || entry.userId !== userId) return undefined;
-  if (Date.now() - entry.createdAt > STORE_TTL_MS) {
-    responses.delete(id);
-    return undefined;
-  }
-  return entry.response;
-}
-
-export function memoryDirectory(config: AssistantConfig, userId: string): string {
-  return join(config.dataDir, "users", userId, "agents", config.agentId, "memories");
 }
 
 const DEFAULT_SOUL = `You are a helpful, direct assistant running inside a pi agent harness.
@@ -102,6 +68,7 @@ async function buildBaseSystemPrompt(config: AssistantConfig, userId: string): P
   return [
     await loadSoul(config),
     SERVER_TOOL_INSTRUCTIONS,
+    WORKSPACE_INSTRUCTIONS,
     store.render("memory", snapshot.memory),
     store.render("user", snapshot.user),
     MEMORY_INSTRUCTIONS,
@@ -161,6 +128,9 @@ export interface RunOptions {
   /** Agent id or backend alias supplied by the client; echoed in the response. */
   requestedModel: string;
   userId: string;
+  /** Short API-key hash used to isolate sessions and workspaces. */
+  userHash: string;
+  sessionStore: SessionStore;
   body: Record<string, unknown>;
   sse?: SseWriter;
   signal?: AbortSignal;
@@ -401,14 +371,13 @@ class ResponseEmitter {
  * are returned as function_call output items for the caller to execute.
  */
 export async function runResponse(options: RunOptions): Promise<Record<string, unknown>> {
-  const { config, model, requestedModel, userId, body } = options;
+  const { config, model, requestedModel, userId, userHash, sessionStore, body } = options;
   const normalized = normalize(config, body, requestedModel);
 
-  const previous = normalized.previousResponseId ? responses.get(normalized.previousResponseId) : undefined;
-  if (
-    normalized.previousResponseId &&
-    (!previous || previous.userId !== userId || previous.agentId !== config.agentId)
-  ) {
+  const previous = normalized.previousResponseId
+    ? sessionStore.get(normalized.previousResponseId, userHash)
+    : null;
+  if (normalized.previousResponseId && !previous) {
     throw new RequestError(`Unknown previous_response_id ${JSON.stringify(normalized.previousResponseId)}`, 404, "not_found");
   }
 
@@ -419,7 +388,7 @@ export async function runResponse(options: RunOptions): Promise<Record<string, u
     throw new RequestError("input is required");
   }
 
-  const baseSystemPrompt = previous?.baseSystemPrompt ?? (await buildBaseSystemPrompt(config, userId));
+  const baseSystemPrompt = previous?.systemPrompt ?? (await buildBaseSystemPrompt(config, userId));
   const instructions = [normalized.rawInstructions, ...converted.instructions].filter(Boolean).join("\n\n");
   const systemPrompt = instructions
     ? `${baseSystemPrompt}\n\n# Client instructions\n${instructions}`
@@ -436,14 +405,33 @@ export async function runResponse(options: RunOptions): Promise<Record<string, u
 
   const serverTools: AgentTool[] = [
     namespaceServerTool(memoryTool(new MemoryStore(memoryDirectory(config, userId)))),
+    namespaceServerTool(sessionSearchTool(sessionStore, userHash)),
+    ...createWorkspaceTools(workspaceDirectory(config, userHash)).map((tool) => namespaceServerTool(tool)),
   ];
   const clientToolNames = new Set(normalized.clientTools.map((tool) => tool.name));
   const tools: AgentTool[] = [...serverTools, ...normalized.clientTools.map(clientToolStub)];
 
-  const estimatedInputTokens = estimateInputTokens(systemPrompt, [...history, ...converted.messages], tools);
-  if (config.maxInputTokens > 0 && estimatedInputTokens > config.maxInputTokens) {
+  const contextMessages = [...history, ...converted.messages];
+  const compaction = await compactMessages({
+    systemPrompt,
+    messages: contextMessages,
+    tools,
+    keepTurns: config.compactionKeepTurns,
+    thresholdTokens: compactionTokenThreshold(config),
+    summarizer: createLlmSummarizer(model, config.apiKey),
+  });
+  if (compaction.compacted) {
+    console.log(
+      `[compaction] agent=${config.agentId} user=${userHash} before=${compaction.beforeTokens} ` +
+        `after=${compaction.afterTokens} dropped=${compaction.droppedMessages}`,
+    );
+  }
+  const initialMessages = compaction.compacted ? compaction.messages : history;
+  const promptMessages = compaction.compacted ? [] : converted.messages;
+
+  if (config.maxInputTokens > 0 && compaction.afterTokens > config.maxInputTokens) {
     throw new RequestError(
-      `Estimated input is ${estimatedInputTokens} tokens, over the configured limit of ${config.maxInputTokens}`,
+      `Estimated input is ${compaction.afterTokens} tokens, over the configured limit of ${config.maxInputTokens}`,
       400,
       "context_length_exceeded",
     );
@@ -471,7 +459,7 @@ export async function runResponse(options: RunOptions): Promise<Record<string, u
     initialState: {
       systemPrompt,
       model,
-      messages: history,
+      messages: initialMessages,
       tools,
       thinkingLevel: "off",
     },
@@ -500,7 +488,7 @@ export async function runResponse(options: RunOptions): Promise<Record<string, u
   options.signal?.addEventListener("abort", abort, { once: true });
   agent.subscribe((event) => emitter.onEvent(event));
   try {
-    await agent.prompt(converted.messages);
+    await agent.prompt(promptMessages);
   } finally {
     options.signal?.removeEventListener("abort", abort);
   }
@@ -511,16 +499,21 @@ export async function runResponse(options: RunOptions): Promise<Record<string, u
     const storedMessages = agent.state.messages.filter(
       (message) => !(message.role === "toolResult" && clientToolNames.has(message.toolName)),
     );
-    responses.set(id, {
-      id,
-      userId,
-      agentId: config.agentId,
-      baseSystemPrompt,
-      messages: storedMessages,
-      response,
-      createdAt: Date.now(),
-    });
-    pruneStore();
+    try {
+      sessionStore.save({
+        responseId: id,
+        previousResponseId: normalized.previousResponseId,
+        userHash,
+        agentId: config.agentId,
+        createdAt: Date.now(),
+        systemPrompt: baseSystemPrompt,
+        messages: storedMessages,
+        response,
+        searchText: messagesToSearchText(storedMessages),
+      });
+    } catch (error) {
+      console.error(`[sessions] failed to save ${id} for agent ${config.agentId}: ${String(error)}`);
+    }
   }
 
   return response;

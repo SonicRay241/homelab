@@ -1,13 +1,15 @@
 import { discoverAgents, resolveAgent, type AgentDefinition } from "./src/agents.ts";
 import { createInfisicalClient } from "./src/auth/infisical.ts";
-import { requestToken, UserRegistry } from "./src/auth/users.ts";
+import { keyHash, requestToken, UserRegistry } from "./src/auth/users.ts";
 import { loadConfig } from "./src/config.ts";
 import { isRecord } from "./src/guards.ts";
 import { SseWriter } from "./src/openai.ts";
-import { getStoredResponse, RequestError, runResponse } from "./src/runner.ts";
+import { RequestError, runResponse } from "./src/runner.ts";
+import { SessionStore, sessionFile } from "./src/sessions.ts";
 
 const baseConfig = loadConfig();
 const agents = discoverAgents(baseConfig);
+const sessionStores = new Map(agents.map((agent) => [agent.id, new SessionStore(sessionFile(agent.config))]));
 const registry = new UserRegistry(createInfisicalClient(baseConfig.infisical), baseConfig.refreshMs, baseConfig.staticKeys);
 
 await registry.start();
@@ -37,8 +39,10 @@ function modelList(): Response {
 
 function streamResponse(
   agent: AgentDefinition,
+  sessionStore: SessionStore,
   requestedModel: string,
   userId: string,
+  userHash: string,
   body: Record<string, unknown>,
   signal: AbortSignal,
 ): Response {
@@ -51,6 +55,8 @@ function streamResponse(
           model: agent.model,
           requestedModel,
           userId,
+          userHash,
+          sessionStore,
           body,
           sse: writer,
           signal,
@@ -101,6 +107,7 @@ const server = Bun.serve({
     const token = requestToken(request);
     const userId = registry.resolve(token);
     if (!userId) return apiError("Missing or invalid API key", 401, "invalid_api_key");
+    const userHash = keyHash(token);
 
     if (request.method === "GET" && (path === "/v1/models" || path === "/models")) return modelList();
     if (request.method === "GET" && path.startsWith("/v1/models/")) {
@@ -113,9 +120,12 @@ const server = Bun.serve({
 
     const responseId = path.match(/^\/(?:v1\/)?responses\/([^/]+)$/)?.[1];
     if (request.method === "GET" && responseId) {
-      const stored = getStoredResponse(decodeURIComponent(responseId), userId);
-      if (!stored) return apiError("Response not found", 404, "not_found");
-      return json(stored);
+      const id = decodeURIComponent(responseId);
+      for (const store of sessionStores.values()) {
+        const record = store.get(id, userHash);
+        if (record) return json(record.response);
+      }
+      return apiError("Response not found", 404, "not_found");
     }
 
     if (request.method === "POST" && (path === "/v1/responses" || path === "/responses")) {
@@ -137,8 +147,12 @@ const server = Bun.serve({
       }
       const requestedModel =
         typeof parsed.model === "string" && parsed.model.trim() ? parsed.model.trim() : agent.id;
+      const sessionStore = sessionStores.get(agent.id);
+      if (!sessionStore) return apiError(`No session store for agent ${agent.id}`, 500, "server_error");
 
-      if (parsed.stream === true) return streamResponse(agent, requestedModel, userId, parsed, request.signal);
+      if (parsed.stream === true) {
+        return streamResponse(agent, sessionStore, requestedModel, userId, userHash, parsed, request.signal);
+      }
       try {
         return json(
           await runResponse({
@@ -146,6 +160,8 @@ const server = Bun.serve({
             model: agent.model,
             requestedModel,
             userId,
+            userHash,
+            sessionStore,
             body: parsed,
             signal: request.signal,
           }),
@@ -172,6 +188,7 @@ function shutdown(signal: string): void {
   stopping = true;
   console.log(`pi-assistant ${signal} received, shutting down`);
   registry.stop();
+  for (const store of sessionStores.values()) store.close();
   server.stop();
   process.exit(0);
 }

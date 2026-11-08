@@ -24,6 +24,10 @@ export interface AssistantConfig {
   maxTokens: number;
   /** Estimated input-token cap for one request; 0 disables the check. */
   maxInputTokens: number;
+  /** Fraction of contextWindow that triggers automatic compaction; 0 disables it. */
+  compactionThreshold: number;
+  /** Number of recent conversation units kept verbatim after compaction. */
+  compactionKeepTurns: number;
   dataDir: string;
   /** Root directory holding one subdirectory per selectable agent. */
   agentsDir: string;
@@ -61,6 +65,14 @@ function nonNegativeIntEnv(name: string, fallback: number): number {
   if (!value) return fallback;
   const n = Number(value);
   if (!Number.isInteger(n) || n < 0) throw new Error(`${name} must be a non-negative integer`);
+  return n;
+}
+
+function ratioEnv(name: string, fallback: number): number {
+  const value = process.env[name]?.trim();
+  if (!value) return fallback;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0 || n > 1) throw new Error(`${name} must be between 0 and 1`);
   return n;
 }
 
@@ -151,6 +163,8 @@ export function loadConfig(): AssistantConfig {
     contextWindow: intEnv("CONTEXT_WINDOW", 128_000),
     maxTokens: intEnv("MAX_TOKENS", 8_192),
     maxInputTokens: nonNegativeIntEnv("MAX_INPUT_TOKENS", 0),
+    compactionThreshold: ratioEnv("COMPACTION_THRESHOLD", 0.75),
+    compactionKeepTurns: Math.max(1, intEnv("COMPACTION_KEEP_TURNS", 6)),
     dataDir: resolve(ROOT, process.env.DATA_DIR?.trim() || "data"),
     agentsDir,
     agentDir,

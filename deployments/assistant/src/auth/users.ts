@@ -8,6 +8,11 @@ export function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 
+/** Short key hash used for per-user session filtering and workspace directories. */
+export function keyHash(token: string): string {
+  return hashToken(token).slice(0, 16);
+}
+
 export function requestToken(request: Request): string {
   const authorization = request.headers.get("authorization");
   const bearer = authorization?.match(/^Bearer\s+(.+)$/i)?.[1];

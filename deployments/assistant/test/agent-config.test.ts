@@ -24,6 +24,8 @@ const BASE: AssistantConfig = {
   contextWindow: 128_000,
   maxTokens: 8_192,
   maxInputTokens: 0,
+  compactionThreshold: 0.75,
+  compactionKeepTurns: 6,
   dataDir: "/tmp/assistant-data",
   agentsDir: "/tmp/assistant-agents",
   agentDir: "/tmp/assistant-agent",
@@ -49,18 +51,22 @@ describe("loadAgentOverrides", () => {
     expect(loadAgentOverrides(await agentDir())).toEqual({});
   });
 
-  it("reads apiUrl, apiKey, model and maxInputTokens", async () => {
+  it("reads apiUrl, apiKey, model and limits", async () => {
     const dir = await agentDir(`
 apiUrl: https://other.example/v1/
 apiKey: sk-other
 model: other:cloud
 maxInputTokens: 9000
+compactionThreshold: 0.5
+compactionKeepTurns: 4
 `);
     expect(loadAgentOverrides(dir)).toEqual({
       apiUrl: "https://other.example/v1",
       apiKey: "sk-other",
       model: "other:cloud",
       maxInputTokens: 9000,
+      compactionThreshold: 0.5,
+      compactionKeepTurns: 4,
     });
   });
 
@@ -87,6 +93,18 @@ maxInputTokens: 9000
     await expect(async () => loadAgentOverrides(await agentDir('maxInputTokens: "100"\n'))).toThrow(
       "non-negative integer",
     );
+    await expect(async () => loadAgentOverrides(await agentDir("compactionThreshold: 1.5\n"))).toThrow(
+      "between 0 and 1",
+    );
+    await expect(async () => loadAgentOverrides(await agentDir("compactionThreshold: -0.1\n"))).toThrow(
+      "between 0 and 1",
+    );
+    await expect(async () => loadAgentOverrides(await agentDir("compactionKeepTurns: 0\n"))).toThrow(
+      "positive integer",
+    );
+    await expect(async () => loadAgentOverrides(await agentDir("compactionKeepTurns: 1.5\n"))).toThrow(
+      "positive integer",
+    );
   });
 
   it("reports invalid YAML with the file name", async () => {
@@ -108,6 +126,14 @@ describe("applyAgentOverrides", () => {
     const config = applyAgentOverrides(BASE, { maxInputTokens: 32_000 });
     expect(config.maxInputTokens).toBe(32_000);
     expect(BASE.maxInputTokens).toBe(0);
+  });
+
+  it("overrides compaction settings", () => {
+    const config = applyAgentOverrides(BASE, { compactionThreshold: 0.5, compactionKeepTurns: 4 });
+    expect(config.compactionThreshold).toBe(0.5);
+    expect(config.compactionKeepTurns).toBe(4);
+    expect(BASE.compactionThreshold).toBe(0.75);
+    expect(BASE.compactionKeepTurns).toBe(6);
   });
 
   it("overrides backend credentials and replaces the advertised model", () => {
