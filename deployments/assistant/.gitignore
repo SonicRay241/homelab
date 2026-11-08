@@ -35,3 +35,6 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # runtime data (per-user memory, workspaces)
 data
+
+# per-agent config overrides (may contain API keys)
+agents/*/config.yaml

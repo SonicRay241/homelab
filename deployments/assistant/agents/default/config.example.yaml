@@ -1,0 +1,9 @@
+# Optional per-agent overrides for the backend connection.
+# Copy this file to config.yaml beside SOUL.md and uncomment what you need.
+# Everything not set here comes from .env. .env remains required.
+#
+# config.yaml is gitignored because apiKey is usually a secret.
+#
+# apiUrl: https://ollama.example.com/v1
+# apiKey: sk-...
+# model: beam:cloud

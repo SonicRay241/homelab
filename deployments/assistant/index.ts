@@ -1,3 +1,4 @@
+import { applyAgentOverrides, loadAgentOverrides } from "./src/agent-config.ts";
 import { createInfisicalClient } from "./src/auth/infisical.ts";
 import { requestToken, UserRegistry } from "./src/auth/users.ts";
 import { loadConfig } from "./src/config.ts";
@@ -6,7 +7,8 @@ import { buildModel } from "./src/model.ts";
 import { SseWriter } from "./src/openai.ts";
 import { getStoredResponse, RequestError, runResponse } from "./src/runner.ts";
 
-const config = loadConfig();
+const baseConfig = loadConfig();
+const config = applyAgentOverrides(baseConfig, loadAgentOverrides(baseConfig.agentDir));
 const model = buildModel(config);
 const registry = new UserRegistry(createInfisicalClient(config.infisical), config.refreshMs, config.staticKeys);
 

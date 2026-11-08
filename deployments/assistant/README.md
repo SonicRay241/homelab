@@ -31,12 +31,15 @@ client ──Bearer sk-...──> assistant :8787
   isolated per user.
 - Default agent directory (`agents/default/SOUL.md`) is the base system prompt. `AGENT_DIR` and
   `AGENT_ID` are already agent-scoped for future multi-agent support (`data/users/<user>/agents/<id>/`).
+- Optional per-agent `config.yaml` beside `SOUL.md` overrides the backend URL, key, or model from
+  `.env` (`.env` stays required and supplies every value the YAML omits).
 
 ## Setup
 
 ```bash
 bun install
 cp .env.example .env   # fill in backend + Infisical credentials
+cp agents/default/config.example.yaml agents/default/config.yaml   # optional overrides
 bun run start
 ```
 
@@ -45,6 +48,25 @@ secret name `alice`, value `sk-...`; secret name `bob`, value `sk-...`.
 
 OpenWebUI / any Responses-API client: base URL `http://<host>:8787/v1`, API key = one of the
 Infisical secret values, model = `MODEL` (or an alias from `MODEL_ALIASES`).
+
+## Per-agent overrides
+
+`<AGENT_DIR>/config.yaml` may override any of:
+
+```yaml
+apiUrl: https://other-backend.example/v1
+apiKey: sk-other-backend
+model: other:cloud
+```
+
+- `.env` is still required: `BASE_API_URL`, `API_KEY`, and `MODEL` are the defaults.
+- Missing file or unset keys fall back to `.env`.
+- The file is read once at startup; restart to apply changes.
+- Unknown keys, non-string values, and empty values fail startup instead of being ignored.
+- Overriding `model` advertises only that model on `/v1/models`; env `MODEL_ALIASES` belong to the
+  env model.
+- `config.yaml` is gitignored because it can contain an API key; commit
+  `config.example.yaml` instead.
 
 ## Environment
 
