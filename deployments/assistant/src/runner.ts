@@ -603,6 +603,7 @@ export async function runResponse(options: RunOptions): Promise<Record<string, u
     },
     { "assistant.agent": config.agentId, "assistant.username": userId, "assistant.response_id": id },
   );
+  if (typeof response.output_text === "string") options.telemetry?.recordOutput(response.output_text);
 
   if (normalized.store) {
     const storedMessages = agent.state.messages.filter(

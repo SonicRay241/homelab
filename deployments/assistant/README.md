@@ -207,6 +207,7 @@ BASEDIR/agent/
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | no | – | OTLP/HTTP collector base URL; telemetry is off when unset |
 | `OTEL_SERVICE_NAME` | no | `pi-assistant` | `service.name` resource attribute |
 | `OTEL_SDK_DISABLED` | no | – | `1`/`true` turns telemetry off explicitly |
+| `OTEL_CAPTURE_CONTENT` | no | – | `1`/`true` records prompt/response text on spans (PII; off by default) |
 
 Local fallback keys must be at least 12 characters. They are useful for tests/offline work and are
 always accepted alongside Infisical secrets.
@@ -278,6 +279,9 @@ when the endpoint is unset or `OTEL_SDK_DISABLED` is true.
   tokens are reported separately, so `input + cached + output` is the true total.
 - Metrics: `assistant.requests`, `assistant.request.duration` (ms), and `assistant.tokens`
   (`gen_ai.token.type=input|output|cached`).
+- With `OTEL_CAPTURE_CONTENT=1`, the request span also carries `assistant.request.input`,
+  `assistant.request.instructions`, and `assistant.response.output`, truncated to 8 KiB. This is
+  opt-in because prompts can contain PII or secrets.
 - Spans export in batches (default 5s); metrics every 15s. Both are flushed on `SIGTERM`.
 
 ## Memory
