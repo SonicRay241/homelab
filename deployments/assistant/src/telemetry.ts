@@ -25,8 +25,6 @@ export type TokenUsage = {
   cached_input_tokens: number | null;
 };
 
-const CONTENT_LIMIT = 8_192;
-
 export type RequestTelemetry = {
   span: Span;
   /** Ends the span and records the request metric exactly once. */
@@ -35,10 +33,6 @@ export type RequestTelemetry = {
   fail(error: unknown): void;
   /** Records token counters and usage attributes on the span. */
   recordUsage(usage: TokenUsage, attributes?: Attributes): void;
-  /** Captures the request input/instructions when OTEL_CAPTURE_CONTENT is enabled. */
-  recordInput(input: unknown, instructions?: unknown): void;
-  /** Captures the response text when OTEL_CAPTURE_CONTENT is enabled. */
-  recordOutput(output: string): void;
   /** Wraps a response so the span ends when its body is consumed or cancelled. */
   wrap(response: Response): Response;
 };
@@ -112,12 +106,6 @@ export function createTelemetry(cfg: OtelConfig | null): Telemetry {
     ...(usage.cached_input_tokens === null ? {} : { "gen_ai.usage.cached_input_tokens": usage.cached_input_tokens }),
   });
 
-  const captureContent = cfg?.captureContent === true;
-  const contentText = (value: unknown): string => {
-    const text = typeof value === "string" ? value : JSON.stringify(value) ?? String(value);
-    return text.length > CONTENT_LIMIT ? `${text.slice(0, CONTENT_LIMIT)}…` : text;
-  };
-
   return {
     enabled: sdk !== null,
 
@@ -160,21 +148,6 @@ export function createTelemetry(cfg: OtelConfig | null): Telemetry {
         recordUsage(usage, extra = {}) {
           addTokenCounts(usage, extra);
           span.setAttributes({ ...usageAttributes(usage), ...extra });
-        },
-
-        recordInput(input, instructions) {
-          if (!captureContent) return;
-          span.setAttributes({
-            "assistant.request.input": contentText(input),
-            ...(instructions === undefined || instructions === null || instructions === ""
-              ? {}
-              : { "assistant.request.instructions": contentText(instructions) }),
-          });
-        },
-
-        recordOutput(output) {
-          if (!captureContent || !output) return;
-          span.setAttribute("assistant.response.output", contentText(output));
         },
 
         wrap(response) {

@@ -18,7 +18,6 @@ const collector = Bun.serve({
 const telemetry = createTelemetry({
   endpoint: `http://127.0.0.1:${collector.port}`,
   serviceName: "pi-assistant-test",
-  captureContent: true,
 });
 
 type OtlpValue = { stringValue?: string; intValue?: string | number; boolValue?: boolean };
@@ -52,17 +51,10 @@ describe("OTEL config", () => {
     expect(loadOtelConfig({ OTEL_EXPORTER_OTLP_ENDPOINT: "http://collector:4318/" })).toEqual({
       endpoint: "http://collector:4318",
       serviceName: "pi-assistant",
-      captureContent: false,
     });
     expect(
       loadOtelConfig({ OTEL_EXPORTER_OTLP_ENDPOINT: "http://collector:4318", OTEL_SERVICE_NAME: "custom" }),
-    ).toEqual({ endpoint: "http://collector:4318", serviceName: "custom", captureContent: false });
-    expect(
-      loadOtelConfig({
-        OTEL_EXPORTER_OTLP_ENDPOINT: "http://collector:4318",
-        OTEL_CAPTURE_CONTENT: "1",
-      }),
-    ).toEqual({ endpoint: "http://collector:4318", serviceName: "pi-assistant", captureContent: true });
+    ).toEqual({ endpoint: "http://collector:4318", serviceName: "custom" });
   });
 
   it("keeps a no-op telemetry object usable", async () => {
@@ -84,8 +76,6 @@ describe("OTEL export", () => {
       { model: "beam:cloud", input_tokens: 7, output_tokens: 3, cached_input_tokens: 2 },
       { "assistant.agent": "default", "assistant.response_id": "resp_test" },
     );
-    request.recordInput("hello", "be nice");
-    request.recordOutput("world");
 
     const response = request.wrap(new Response("hello", { status: 201, headers: { "content-type": "text/plain" } }));
     expect(response.status).toBe(201);
@@ -104,9 +94,6 @@ describe("OTEL export", () => {
     expect(intAttr(span!, "gen_ai.usage.input_tokens")).toBe(7);
     expect(intAttr(span!, "gen_ai.usage.output_tokens")).toBe(3);
     expect(intAttr(span!, "gen_ai.usage.cached_input_tokens")).toBe(2);
-    expect(strAttr(span!, "assistant.request.input")).toBe("hello");
-    expect(strAttr(span!, "assistant.request.instructions")).toBe("be nice");
-    expect(strAttr(span!, "assistant.response.output")).toBe("world");
 
     const metrics = JSON.stringify(otlp.metrics);
     expect(metrics).toContain("assistant.requests");

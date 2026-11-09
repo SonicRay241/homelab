@@ -248,7 +248,6 @@ async function handleRequest(request: Request, url: URL, requestTelemetry: Reque
       return apiError("Request body must be valid JSON", 400, "invalid_json");
     }
     if (!isRecord(parsed)) return apiError("Request body must be a JSON object", 400, "invalid_request");
-    requestTelemetry.recordInput(parsed.input, parsed.instructions);
 
     const agent = resolveAgent(agents, baseConfig.agentId, parsed.model);
     if (!agent) {

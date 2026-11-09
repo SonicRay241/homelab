@@ -3,8 +3,6 @@ import { resolveAgentDir, resolveAgentsDir, resolveBasedir } from "./basedir.ts"
 export interface OtelConfig {
   endpoint: string;
   serviceName: string;
-  /** Capture prompt/response text on spans; off by default. */
-  captureContent: boolean;
 }
 
 export interface InfisicalConfig {
@@ -77,7 +75,6 @@ export function loadOtelConfig(env: Record<string, string | undefined> = process
   return {
     endpoint: endpoint.replace(/\/+$/, ""),
     serviceName: env.OTEL_SERVICE_NAME?.trim() || "pi-assistant",
-    captureContent: asBool(env.OTEL_CAPTURE_CONTENT),
   };
 }
 
