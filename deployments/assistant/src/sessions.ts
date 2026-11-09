@@ -26,7 +26,7 @@ export interface SessionSearchResult {
 }
 
 export function sessionFile(config: AssistantConfig): string {
-  return join(config.dataDir, "agents", config.agentId, "sessions.db");
+  return join(config.agentDir, "sessions.db");
 }
 
 function contentText(content: string | (TextContent | ImageContent)[]): string {

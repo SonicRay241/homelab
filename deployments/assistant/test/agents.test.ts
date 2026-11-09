@@ -33,10 +33,12 @@ function baseConfig(agentsDir: string, agentDir: string): AssistantConfig {
     maxInputTokens: 0,
     compactionThreshold: 0.75,
     compactionKeepTurns: 6,
-    dataDir: "/tmp/assistant-data",
+    basedir: "/tmp/assistant-data",
     agentsDir,
     agentDir,
     agentId: "default",
+    allowedUsers: [],
+    deniedUsers: [],
     infisical: {
       baseUrl: "https://secrets.example",
       clientId: "id",

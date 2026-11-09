@@ -16,6 +16,8 @@
   "scripts": {
     "start": "bun run index.ts",
     "dev": "bun --watch index.ts",
+    "cli": "bun run cli.ts",
+    "agent": "bun run cli.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   }

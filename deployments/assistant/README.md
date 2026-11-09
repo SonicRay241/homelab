@@ -7,7 +7,7 @@ memory per agent.
 ```
 client ──Bearer sk-...──> assistant :8787
                            │  pi Agent (tools, loop)
-                           ├─ agents/ (SOUL.md + optional config.yaml; one /v1/models entry each)
+                           ├─ BASEDIR/agent/ (SOUL.md + config.yaml; one /v1/models entry each)
                            ├─ Infisical (client keys: name = user id, value = key)
                            ├─ memory (MEMORY.md / USER.md per user per agent)
                            └─ OpenAI-compatible backend (per-agent override or .env)
@@ -30,7 +30,7 @@ client ──Bearer sk-...──> assistant :8787
 - Automatic compaction summarizes older turns when the estimated context crosses a configurable
   fraction of the context window, keeping recent turns verbatim for long-running chats.
 - Server file/shell tools (`server_read`, `server_write`, `server_edit`, `server_bash`) run in a
-  per-agent, per-user workspace (`data/agents/<agent>/user-<key-hash>`); `server_session_search`
+  per-agent, per-user workspace (`BASEDIR/agent/<agent>/user-<key-hash>`); `server_session_search`
   searches this user's persisted conversations.
 - Hermes-style persistent memory per user, with `MEMORY.md` (agent notes, 2200 chars) and
   `USER.md` (user profile, 1375 chars), injected as a frozen snapshot at conversation start.
@@ -38,20 +38,23 @@ client ──Bearer sk-...──> assistant :8787
   client API key. The key set is refreshed atomically (`TOKEN_REFRESH_MS`); unknown keys get 401 and
   the API fails closed with 503 until at least one key is loaded. Memory and transcripts are
   isolated per user.
-- Multi-agent: every `agents/<id>/` directory with a `SOUL.md` is selectable. `/v1/models` lists
-  those ids, and the request `model` field selects one. `.env` remains the required default backend;
-  `agents/<id>/config.yaml` can override the backend URL, key, or model per agent.
+- Multi-agent: every `BASEDIR/agent/<id>/` directory with a `SOUL.md` is selectable. `/v1/models`
+  lists those ids, and the request `model` field selects one. `.env` remains the required default
+  backend; `BASEDIR/agent/<id>/config.yaml` can override the backend URL, key, or model per agent.
 - Agent handoffs: `server_handoff_send` passes research/context to another agent; the recipient uses
-  `server_handoff_inbox` / `server_handoff_read`. Handoffs live in `data/handoffs.db` (table
+  `server_handoff_inbox` / `server_handoff_read`. Handoffs live in `BASEDIR/handoffs.db` (table
   `handoff`), scoped by API-key hash and target agent, and are also available over HTTP.
-- SOUL prompt and memory are scoped per agent (`data/users/<user>/agents/<agent>/memories/`).
+- SOUL prompt and memory are scoped per agent (`BASEDIR/agent/<agent>/users/<user>/memories/`).
 
 ## Setup
+
+All agent configuration and runtime state live under `BASEDIR` (default: the project root).
+Set `BASEDIR=/data` in Docker and mount a volume there.
 
 ```bash
 bun install
 cp .env.example .env   # fill in backend + Infisical credentials
-cp agents/default/config.example.yaml agents/default/config.yaml   # optional overrides
+cp agent/default/config.example.yaml agent/default/config.yaml   # optional overrides
 bun run start
 ```
 
@@ -65,7 +68,7 @@ compatibility, but only agent ids are listed.
 
 ## Per-agent overrides
 
-`<AGENT_DIR>/config.yaml` may override any of:
+`BASEDIR/agent/<agent>/config.yaml` may override any of:
 
 ```yaml
 apiUrl: https://other-backend.example/v1
@@ -74,6 +77,10 @@ model: other:cloud
 maxInputTokens: 100000
 compactionThreshold: 0.75
 compactionKeepTurns: 6
+allowedUsers:
+  - alice
+deniedUsers:
+  - mallory
 ```
 
 - `.env` is still required: `BASE_API_URL`, `API_KEY`, and `MODEL` are the defaults.
@@ -83,15 +90,38 @@ compactionKeepTurns: 6
 - `maxInputTokens` is a non-negative integer; `0` disables the input check for that agent.
 - `compactionThreshold` is in `[0,1]` (`0` disables compaction); `compactionKeepTurns` is a
   positive integer.
+- `allowedUsers` is an optional whitelist; when non-empty, only those Infisical user ids may use the
+  agent. `deniedUsers` is a blacklist and always wins. Restricted agents are hidden from that
+  user's `/v1/models` and return `403 user_not_allowed`.
 - Overriding `model` changes that agent's backend model; it does not change the agent id listed in
   `/v1/models`. Env `MODEL_ALIASES` are accepted for the default agent but are not listed.
 - `config.yaml` is gitignored because it can contain an API key; commit
   `config.example.yaml` instead.
 
+## Agent CLI
+
+`bun run cli.ts` (or `bun run cli`, `bun run agent`) manages agent directories under `BASEDIR`:
+
+```bash
+bun run cli list
+bun run cli path
+bun run cli new research --model research:cloud --allow alice
+bun run cli show research
+bun run cli set research maxInputTokens 100000
+bun run cli set research apiKey sk-...
+bun run cli allow research bob
+bun run cli deny research mallory
+bun run cli validate
+bun run cli remove research --yes
+```
+
+`new` creates `SOUL.md` and `config.example.yaml` (and `config.yaml` when flags are given). `show`
+masks `apiKey`. `allow`/`deny` edit the YAML access lists and keep them mutually exclusive.
+
 ## Agents and model selection
 
 ```
-agents/
+BASEDIR/agent/
   default/
     SOUL.md
     config.yaml            # optional, gitignored
@@ -108,8 +138,9 @@ agents/
   working. Agent ids win if an id collides with an alias.
 - Agent directories are discovered at startup; restart after adding, removing, or renaming one.
 - Each agent applies its own `config.yaml` overrides (backend URL/key/model, `maxInputTokens`,
-  `compactionThreshold`, `compactionKeepTurns`), SOUL prompt, sessions, workspace, and memory
-  namespace. Infisical, port, data root, and refresh settings remain process-wide.
+  `compactionThreshold`, `compactionKeepTurns`, `allowedUsers`, `deniedUsers`), SOUL prompt,
+  sessions, workspace, and memory namespace. Infisical, port, `BASEDIR`, and refresh settings
+  remain process-wide.
 
 ## Environment
 
@@ -128,10 +159,10 @@ agents/
 | `ASSISTANT_API_KEYS` | no | – | Local fallback merged with Infisical (`key:user`, JSON object, or `[{key,user}]`) |
 | `ASSISTANT_API_KEY` / `ASSISTANT_USER` | no | `default` | Single-key local fallback |
 | `PORT` / `BIND_HOST` | no | `8787` / `0.0.0.0` | Listen address |
-| `DATA_DIR` | no | `data` | Per-user memory root |
-| `AGENTS_DIR` | no | `agents` | Root scanned for selectable agent directories |
+| `BASEDIR` | no | `.` | Root for agent configs, memory, sessions, workspaces, handoffs |
+| `AGENTS_DIR` | no | `agent` | Agent directory, relative to `BASEDIR` (or absolute) |
 | `AGENT_ID` | no | `default` | Env-configured default agent id |
-| `AGENT_DIR` | no | `<AGENTS_DIR>/<AGENT_ID>` | Directory for the env-configured default agent |
+| `AGENT_DIR` | no | `agent/<AGENT_ID>` | Default agent dir, relative to `BASEDIR` (or absolute) |
 | `CONTEXT_WINDOW` / `MAX_TOKENS` | no | `128000` / `8192` | Model metadata |
 | `MAX_INPUT_TOKENS` | no | `0` | Estimated input-token cap per request; `0` disables it |
 | `COMPACTION_THRESHOLD` | no | `0.75` | Fraction of `CONTEXT_WINDOW` that triggers compaction; `0` disables |
@@ -172,7 +203,7 @@ Streaming emits the Responses SSE sequence (`response.created`, `response.in_pro
 
 ## Memory
 
-Paths: `data/users/<user>/agents/<agent>/memories/{MEMORY.md,USER.md}`.
+Paths: `BASEDIR/agent/<agent>/users/<user>/memories/{MEMORY.md,USER.md}`.
 
 The model calls `server_memory` with `target` (`memory` or `user`), `action` (`add`, `patch`, `remove`,
 `batch`), `content`, `old_text`, `operations`. Entries are separated by a line containing only `§`.
@@ -183,7 +214,7 @@ life of a conversation; tool results always show live entries and usage.
 
 ## Sessions
 
-One SQLite database per agent: `data/agents/<agent>/sessions.db` (WAL mode), table `session`.
+One SQLite database per agent: `BASEDIR/agent/<agent>/sessions.db` (WAL mode), table `session`.
 
 - Each row stores `response_id`, `previous_response_id`, `user_hash`, `agent_id`, timestamp, the
   frozen base system prompt, the pi transcript (`messages` JSON), and the Responses payload.
@@ -199,7 +230,7 @@ One SQLite database per agent: `data/agents/<agent>/sessions.db` (WAL mode), tab
 
 ## Agent handoffs
 
-Sessions are per agent, so cross-agent context uses a central `data/handoffs.db` with table
+Sessions are per agent, so cross-agent context uses a central `BASEDIR/handoffs.db` with table
 `handoff`. Rows hold source/target agent, a title, summary, free-form context, an optional recent
 transcript, `source_response_id`, and `pending` / `read` / `consumed` status. They are scoped by the
 short API-key hash and target agent.
@@ -248,7 +279,7 @@ When the estimated prompt exceeds `COMPACTION_THRESHOLD × CONTEXT_WINDOW` (capp
 
 ## Workspace tools
 
-Server tools run in `data/agents/<agent>/user-<key-hash>/`:
+Server tools run in `BASEDIR/agent/<agent>/user-<key-hash>/`:
 
 | Tool | Behavior |
 | --- | --- |
@@ -263,9 +294,10 @@ not passed in its environment.
 
 ## Notes / limits
 
-- Transcripts and response ids persist in `data/agents/<agent>/sessions.db`; memory files and
-  workspaces also survive restarts. Sessions are filtered by the short API-key hash, so rotating a
-  user's key starts a fresh session namespace. `store: false` skips persistence for that response.
+- Transcripts and response ids persist in `BASEDIR/agent/<agent>/sessions.db`; memory files,
+  workspaces, and handoffs also survive restarts. Sessions are filtered by the short API-key hash,
+  so rotating a user's key starts a fresh session namespace. `store: false` skips persistence for
+  that response.
 - Auto-compaction runs before the model call and after the input-limit estimate; the summary call
   uses the same backend model and is not counted as user-visible output tokens.
 - `MAX_INPUT_TOKENS` / `maxInputTokens` rejects oversized requests with `400
@@ -283,8 +315,8 @@ not passed in its environment.
   `bash` remain distinct. Server file/shell tools are scoped to the per-user workspace; add more
   only if you trust the model with their side effects.
 - `bun test` covers memory semantics, Responses input conversion, the Infisical key registry,
-  agent config overrides, agent discovery/resolution, server tool namespacing, token estimation,
-  SQLite session persistence/search, compaction, workspace tools, and handoffs;
-  `bun run typecheck` for types. Tests live in `test/`.
+  agent config overrides/access lists, agent discovery/resolution, server tool namespacing, token
+  estimation, SQLite session persistence/search, compaction, workspace tools, handoffs, and the
+  agent CLI; `bun run typecheck` for types. Tests live in `test/`.
 - Client keys are hashed for lookup and never logged. Infisical failures keep the last known good
   key set; an empty initial load keeps the API at 503 instead of running open.

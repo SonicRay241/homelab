@@ -48,7 +48,7 @@ const MAX_CONTEXT = 100_000;
 const MAX_TRANSCRIPT = 100_000;
 
 export function handoffFile(config: AssistantConfig): string {
-  return join(config.dataDir, "handoffs.db");
+  return join(config.basedir, "handoffs.db");
 }
 
 /**

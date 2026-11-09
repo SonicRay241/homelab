@@ -1,7 +1,7 @@
 import { discoverAgents, resolveAgent, type AgentDefinition } from "./src/agents.ts";
 import { createInfisicalClient } from "./src/auth/infisical.ts";
 import { keyHash, requestToken, UserRegistry } from "./src/auth/users.ts";
-import { loadConfig } from "./src/config.ts";
+import { isUserAllowed, loadConfig } from "./src/config.ts";
 import { isRecord } from "./src/guards.ts";
 import { HandoffStore, handoffFile, renderHandoffMarkdown, type HandoffStatus } from "./src/handoffs.ts";
 import { SseWriter } from "./src/openai.ts";
@@ -32,11 +32,11 @@ function apiError(message: string, status: number, code: string, param: string |
   return json({ error: { message, type, param, code } }, status);
 }
 
-function modelList(): Response {
+function modelList(allowed: AgentDefinition[]): Response {
   const created = Math.floor(Date.now() / 1_000);
   return json({
     object: "list",
-    data: agents.map((agent) => ({ id: agent.id, object: "model", created, owned_by: "pi-assistant" })),
+    data: allowed.map((agent) => ({ id: agent.id, object: "model", created, owned_by: "pi-assistant" })),
   });
 }
 
@@ -51,19 +51,21 @@ function agentFromQuery(url: URL): AgentDefinition | undefined {
   return agents.find((agent) => agent.id === target);
 }
 
-function requireAgentFromQuery(url: URL): AgentDefinition | Response {
+function requireAgentFromQuery(url: URL, userId: string): AgentDefinition | Response {
   const agent = agentFromQuery(url);
-  if (agent) return agent;
-  return apiError(
-    `target query parameter must be one of: ${agentIds.join(", ")}`,
-    400,
-    "invalid_agent",
-  );
+  if (!agent) {
+    return apiError(`target query parameter must be one of: ${agentIds.join(", ")}`, 400, "invalid_agent");
+  }
+  if (!isUserAllowed(agent.config, userId)) {
+    return apiError(`User ${userId} is not allowed to use agent ${agent.id}`, 403, "user_not_allowed");
+  }
+  return agent;
 }
 
 function streamResponse(
   agent: AgentDefinition,
   sessionStore: SessionStore,
+  allowedAgentIds: string[],
   requestedModel: string,
   userId: string,
   userHash: string,
@@ -82,7 +84,7 @@ function streamResponse(
           userHash,
           sessionStore,
           handoffStore,
-          agentIds,
+          agentIds: allowedAgentIds,
           body,
           sse: writer,
           signal,
@@ -134,18 +136,24 @@ const server = Bun.serve({
     const userId = registry.resolve(token);
     if (!userId) return apiError("Missing or invalid API key", 401, "invalid_api_key");
     const userHash = keyHash(token);
+    const allowedAgents = agents.filter((agent) => isUserAllowed(agent.config, userId));
+    const allowedAgentIds = allowedAgents.map((agent) => agent.id);
 
-    if (request.method === "GET" && (path === "/v1/models" || path === "/models")) return modelList();
+    if (request.method === "GET" && (path === "/v1/models" || path === "/models")) return modelList(allowedAgents);
     if (request.method === "GET" && path.startsWith("/v1/models/")) {
       const id = decodeURIComponent(path.slice("/v1/models/".length));
-      if (agents.some((agent) => agent.id === id)) {
+      const agent = allowedAgents.find((entry) => entry.id === id);
+      if (agent) {
         return json({ id, object: "model", created: Math.floor(Date.now() / 1_000), owned_by: "pi-assistant" });
+      }
+      if (agents.some((entry) => entry.id === id)) {
+        return apiError(`User ${userId} is not allowed to use agent ${id}`, 403, "user_not_allowed");
       }
       return apiError(`Unknown model ${id}`, 404, "model_not_found");
     }
 
     if (request.method === "GET" && (path === "/v1/handoffs" || path === "/handoffs")) {
-      const target = requireAgentFromQuery(url);
+      const target = requireAgentFromQuery(url, userId);
       if (target instanceof Response) return target;
       const statusParam = url.searchParams.get("status") ?? "pending";
       if (!isHandoffStatus(statusParam)) {
@@ -158,7 +166,7 @@ const server = Bun.serve({
 
     const consumeHandoff = path.match(/^\/(?:v1\/)?handoffs\/([^/]+)\/consume$/)?.[1];
     if (request.method === "POST" && consumeHandoff) {
-      const target = requireAgentFromQuery(url);
+      const target = requireAgentFromQuery(url, userId);
       if (target instanceof Response) return target;
       const id = decodeURIComponent(consumeHandoff);
       if (!handoffStore.consume(id, userHash, target.id)) {
@@ -169,7 +177,7 @@ const server = Bun.serve({
 
     const handoffId = path.match(/^\/(?:v1\/)?handoffs\/([^/]+)$/)?.[1];
     if (request.method === "GET" && handoffId) {
-      const target = requireAgentFromQuery(url);
+      const target = requireAgentFromQuery(url, userId);
       if (target instanceof Response) return target;
       const record = handoffStore.get(decodeURIComponent(handoffId), userHash, target.id);
       if (!record) return apiError("Handoff not found", 404, "not_found");
@@ -184,8 +192,9 @@ const server = Bun.serve({
     const responseId = path.match(/^\/(?:v1\/)?responses\/([^/]+)$/)?.[1];
     if (request.method === "GET" && responseId) {
       const id = decodeURIComponent(responseId);
-      for (const store of sessionStores.values()) {
-        const record = store.get(id, userHash);
+      for (const agent of allowedAgents) {
+        const store = sessionStores.get(agent.id);
+        const record = store?.get(id, userHash);
         if (record) return json(record.response);
       }
       return apiError("Response not found", 404, "not_found");
@@ -203,10 +212,13 @@ const server = Bun.serve({
       const agent = resolveAgent(agents, baseConfig.agentId, parsed.model);
       if (!agent) {
         return apiError(
-          `Unknown model ${JSON.stringify(parsed.model)}. Available agents: ${agents.map((entry) => entry.id).join(", ")}`,
+          `Unknown model ${JSON.stringify(parsed.model)}. Available agents: ${allowedAgentIds.join(", ")}`,
           404,
           "model_not_found",
         );
+      }
+      if (!isUserAllowed(agent.config, userId)) {
+        return apiError(`User ${userId} is not allowed to use agent ${agent.id}`, 403, "user_not_allowed");
       }
       const requestedModel =
         typeof parsed.model === "string" && parsed.model.trim() ? parsed.model.trim() : agent.id;
@@ -214,7 +226,16 @@ const server = Bun.serve({
       if (!sessionStore) return apiError(`No session store for agent ${agent.id}`, 500, "server_error");
 
       if (parsed.stream === true) {
-        return streamResponse(agent, sessionStore, requestedModel, userId, userHash, parsed, request.signal);
+        return streamResponse(
+          agent,
+          sessionStore,
+          allowedAgentIds,
+          requestedModel,
+          userId,
+          userHash,
+          parsed,
+          request.signal,
+        );
       }
       try {
         return json(
@@ -226,7 +247,7 @@ const server = Bun.serve({
             userHash,
             sessionStore,
             handoffStore,
-            agentIds,
+            agentIds: allowedAgentIds,
             body: parsed,
             signal: request.signal,
           }),

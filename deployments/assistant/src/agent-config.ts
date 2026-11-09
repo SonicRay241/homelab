@@ -1,6 +1,6 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { AssistantConfig } from "./config.ts";
+import { isValidUserId, type AssistantConfig } from "./config.ts";
 import { isRecord } from "./guards.ts";
 
 export const AGENT_CONFIG_FILE = "config.yaml";
@@ -11,6 +11,8 @@ const ALLOWED_KEYS = new Set([
   "maxInputTokens",
   "compactionThreshold",
   "compactionKeepTurns",
+  "allowedUsers",
+  "deniedUsers",
 ]);
 
 export interface AgentOverrides {
@@ -20,6 +22,22 @@ export interface AgentOverrides {
   maxInputTokens?: number;
   compactionThreshold?: number;
   compactionKeepTurns?: number;
+  allowedUsers?: string[];
+  deniedUsers?: string[];
+}
+
+function userList(value: unknown, key: string, file: string): string[] {
+  if (!Array.isArray(value)) throw new Error(`${file}: ${key} must be an array of user ids`);
+  const users: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "string") throw new Error(`${file}: ${key} entries must be strings`);
+    const user = entry.trim();
+    if (!isValidUserId(user)) {
+      throw new Error(`${file}: ${key} contains an invalid user id ${JSON.stringify(user)}`);
+    }
+    users.push(user);
+  }
+  return Array.from(new Set(users));
 }
 
 function stringValue(value: unknown, key: string, file: string): string {
@@ -80,6 +98,8 @@ export function loadAgentOverrides(agentDir: string): AgentOverrides {
     }
     overrides.compactionKeepTurns = value;
   }
+  if ("allowedUsers" in parsed) overrides.allowedUsers = userList(parsed.allowedUsers, "allowedUsers", file);
+  if ("deniedUsers" in parsed) overrides.deniedUsers = userList(parsed.deniedUsers, "deniedUsers", file);
   return overrides;
 }
 
@@ -94,7 +114,16 @@ export function applyAgentOverrides(config: AssistantConfig, overrides: AgentOve
     maxInputTokens: overrides.maxInputTokens ?? config.maxInputTokens,
     compactionThreshold: overrides.compactionThreshold ?? config.compactionThreshold,
     compactionKeepTurns: overrides.compactionKeepTurns ?? config.compactionKeepTurns,
+    allowedUsers: overrides.allowedUsers ?? config.allowedUsers,
+    deniedUsers: overrides.deniedUsers ?? config.deniedUsers,
     // A model override replaces the advertised list; env aliases belong to the default model.
     modelIds: overrides.model ? [modelId] : config.modelIds,
   };
+}
+
+/** Writes the agent's config.yaml from parsed overrides (used by the CLI). */
+export function writeAgentOverrides(agentDir: string, overrides: AgentOverrides): void {
+  mkdirSync(agentDir, { recursive: true });
+  const clean = Object.fromEntries(Object.entries(overrides).filter(([, value]) => value !== undefined));
+  writeFileSync(join(agentDir, AGENT_CONFIG_FILE), Bun.YAML.stringify(clean, null, 2), "utf8");
 }

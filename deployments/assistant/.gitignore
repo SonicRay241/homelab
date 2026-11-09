@@ -33,11 +33,13 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # Finder (MacOS) folder config
 .DS_Store
 
-# runtime data (per-user memory, workspaces)
+# runtime state under BASEDIR (legacy data kept ignored)
 data
-
-# per-agent config overrides (may contain API keys)
-agents/*/config.yaml
+agent/*/config.yaml
+agent/*/sessions.db*
+agent/*/user-*
+agent/*/users/
+handoffs.db*
 
 # root .gitignore ignores **/.env*; keep the committed template
 !.env.example

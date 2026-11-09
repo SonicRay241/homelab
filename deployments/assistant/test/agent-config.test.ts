@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyAgentOverrides, loadAgentOverrides } from "../src/agent-config.ts";
-import type { AssistantConfig } from "../src/config.ts";
+import { isUserAllowed, type AssistantConfig } from "../src/config.ts";
 
 const dirs: string[] = [];
 
@@ -26,10 +26,12 @@ const BASE: AssistantConfig = {
   maxInputTokens: 0,
   compactionThreshold: 0.75,
   compactionKeepTurns: 6,
-  dataDir: "/tmp/assistant-data",
+  basedir: "/tmp/assistant-data",
   agentsDir: "/tmp/assistant-agents",
   agentDir: "/tmp/assistant-agent",
   agentId: "default",
+  allowedUsers: [],
+  deniedUsers: [],
   infisical: {
     baseUrl: "https://secrets.example",
     clientId: "id",
@@ -59,6 +61,11 @@ model: other:cloud
 maxInputTokens: 9000
 compactionThreshold: 0.5
 compactionKeepTurns: 4
+allowedUsers:
+  - alice
+  - bob
+deniedUsers:
+  - mallory
 `);
     expect(loadAgentOverrides(dir)).toEqual({
       apiUrl: "https://other.example/v1",
@@ -67,6 +74,8 @@ compactionKeepTurns: 4
       maxInputTokens: 9000,
       compactionThreshold: 0.5,
       compactionKeepTurns: 4,
+      allowedUsers: ["alice", "bob"],
+      deniedUsers: ["mallory"],
     });
   });
 
@@ -105,6 +114,15 @@ compactionKeepTurns: 4
     await expect(async () => loadAgentOverrides(await agentDir("compactionKeepTurns: 1.5\n"))).toThrow(
       "positive integer",
     );
+    await expect(async () => loadAgentOverrides(await agentDir("allowedUsers: alice\n"))).toThrow(
+      "must be an array",
+    );
+    await expect(async () => loadAgentOverrides(await agentDir("allowedUsers: [bad/user]\n"))).toThrow(
+      "invalid user id",
+    );
+    await expect(async () => loadAgentOverrides(await agentDir("deniedUsers: [123]\n"))).toThrow(
+      "must be strings",
+    );
   });
 
   it("reports invalid YAML with the file name", async () => {
@@ -134,6 +152,16 @@ describe("applyAgentOverrides", () => {
     expect(config.compactionKeepTurns).toBe(4);
     expect(BASE.compactionThreshold).toBe(0.75);
     expect(BASE.compactionKeepTurns).toBe(6);
+  });
+
+  it("overrides access lists", () => {
+    const config = applyAgentOverrides(BASE, { allowedUsers: ["alice"], deniedUsers: ["mallory"] });
+    expect(config.allowedUsers).toEqual(["alice"]);
+    expect(config.deniedUsers).toEqual(["mallory"]);
+    expect(isUserAllowed(config, "alice")).toBe(true);
+    expect(isUserAllowed(config, "bob")).toBe(false);
+    expect(isUserAllowed(config, "mallory")).toBe(false);
+    expect(isUserAllowed(BASE, "anyone")).toBe(true);
   });
 
   it("overrides backend credentials and replaces the advertised model", () => {

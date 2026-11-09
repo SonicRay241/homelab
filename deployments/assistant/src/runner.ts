@@ -53,7 +53,7 @@ export class RequestError extends Error {
 }
 
 export function memoryDirectory(config: AssistantConfig, userId: string): string {
-  return join(config.dataDir, "users", userId, "agents", config.agentId, "memories");
+  return join(config.agentDir, "users", userId, "memories");
 }
 
 function newId(prefix: string): string {

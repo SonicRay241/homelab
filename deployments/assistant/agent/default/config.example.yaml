@@ -10,3 +10,7 @@
 # maxInputTokens: 100000
 # compactionThreshold: 0.75
 # compactionKeepTurns: 6
+# allowedUsers:
+#   - alice
+# deniedUsers:
+#   - mallory

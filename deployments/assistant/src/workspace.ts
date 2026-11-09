@@ -10,7 +10,7 @@ const MAX_READ_LINES = 2_000;
 const MAX_OUTPUT_CHARS = 100_000;
 
 export function workspaceDirectory(config: AssistantConfig, userHash: string): string {
-  return join(config.dataDir, "agents", config.agentId, `user-${userHash}`);
+  return join(config.agentDir, `user-${userHash}`);
 }
 
 function resolveInWorkspace(root: string, requested: string): string {

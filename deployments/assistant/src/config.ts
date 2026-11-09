@@ -1,4 +1,4 @@
-import { resolve } from "node:path";
+import { resolveAgentDir, resolveAgentsDir, resolveBasedir } from "./basedir.ts";
 
 export interface InfisicalConfig {
   baseUrl: string;
@@ -28,19 +28,35 @@ export interface AssistantConfig {
   compactionThreshold: number;
   /** Number of recent conversation units kept verbatim after compaction. */
   compactionKeepTurns: number;
-  dataDir: string;
+  /** Root for agent configs, memory, sessions, workspaces, and handoffs. */
+  basedir: string;
   /** Root directory holding one subdirectory per selectable agent. */
   agentsDir: string;
   agentDir: string;
   agentId: string;
+  /** If non-empty, only these user ids may use this agent. */
+  allowedUsers: string[];
+  /** These user ids are always denied this agent. */
+  deniedUsers: string[];
   infisical: InfisicalConfig;
   refreshMs: number;
   /** Optional local fallback merged with Infisical secrets: client key -> user id. */
   staticKeys: Map<string, string>;
 }
 
-const ROOT = resolve(import.meta.dir, "..");
 const USER_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+
+export function isValidUserId(value: string): boolean {
+  return USER_ID.test(value);
+}
+
+export function isUserAllowed(
+  config: Pick<AssistantConfig, "allowedUsers" | "deniedUsers">,
+  userId: string,
+): boolean {
+  if (config.deniedUsers.includes(userId)) return false;
+  return config.allowedUsers.length === 0 || config.allowedUsers.includes(userId);
+}
 
 function required(name: string): string {
   const value = process.env[name]?.trim();
@@ -147,11 +163,10 @@ export function loadConfig(): AssistantConfig {
   const modelIds = Array.from(new Set([modelId, ...aliases]));
 
   const agentId = process.env.AGENT_ID?.trim() || "default";
-  if (!USER_ID.test(agentId)) throw new Error(`Invalid AGENT_ID ${JSON.stringify(agentId)}`);
-  const agentsDir = resolve(ROOT, process.env.AGENTS_DIR?.trim() || "agents");
-  const agentDir = process.env.AGENT_DIR?.trim()
-    ? resolve(ROOT, process.env.AGENT_DIR.trim())
-    : resolve(agentsDir, agentId);
+  if (!isValidUserId(agentId)) throw new Error(`Invalid AGENT_ID ${JSON.stringify(agentId)}`);
+  const basedir = resolveBasedir();
+  const agentsDir = resolveAgentsDir(basedir);
+  const agentDir = resolveAgentDir(basedir, agentsDir, agentId);
 
   return {
     port: intEnv("PORT", 8787),
@@ -165,10 +180,12 @@ export function loadConfig(): AssistantConfig {
     maxInputTokens: nonNegativeIntEnv("MAX_INPUT_TOKENS", 0),
     compactionThreshold: ratioEnv("COMPACTION_THRESHOLD", 0.75),
     compactionKeepTurns: Math.max(1, intEnv("COMPACTION_KEEP_TURNS", 6)),
-    dataDir: resolve(ROOT, process.env.DATA_DIR?.trim() || "data"),
+    basedir,
     agentsDir,
     agentDir,
     agentId,
+    allowedUsers: [],
+    deniedUsers: [],
     infisical: {
       baseUrl: required("INFISICAL_BASE_URL").replace(/\/+$/, ""),
       clientId: required("INFISICAL_CLIENT_ID"),
