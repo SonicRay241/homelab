@@ -28,3 +28,11 @@ services:
       - AGENT_ID=${DEFAULT_AGENT_NAME}
       - CONTEXT_WINDOW=1000000
       - REASONING_EFFORT=high
+    networks:
+      - default
+      - dokploy-network
+    volumes:
+      - pi_assistant_data:/app/harness-cfg
+
+volumes:
+  pi_assistant_data:
