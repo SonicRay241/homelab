@@ -201,6 +201,29 @@ Streaming emits the Responses SSE sequence (`response.created`, `response.in_pro
 `response.output_item.added`, `response.output_text.delta`, `response.function_call_arguments.*`,
 `response.completed` / `response.failed` / `response.incomplete`, `error`).
 
+### Server-tool traces
+
+Server tools (`server_*`) execute inside the agent loop, so their calls are not part of the
+standard Responses output. Set `x-pi-trace` on `POST /v1/responses` to include a presentation-only
+trace in the assistant text (both streaming and non-streaming):
+
+| Header value | Behavior |
+| --- | --- |
+| omitted / `no` | Default. Server tool calls are omitted. |
+| `text` | Append a fenced `text` code block with the tool name, arguments, and output. |
+| `openwebui` | Append Open WebUI `<details type="tool_calls">` chips. |
+
+Arguments and results are truncated to 500 characters. The trace is included in this response's
+`output`/`output_text`, but not in the stored pi transcript; with `previous_response_id` it is not
+replayed to the model. Unknown header values fall back to `no`.
+
+```bash
+curl http://localhost:8787/v1/responses \
+  -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -H 'x-pi-trace: openwebui' \
+  -d '{"model":"default","input":"Read README.md and summarize it."}'
+```
+
 ## Memory
 
 Paths: `BASEDIR/agent/<agent>/users/<user>/memories/{MEMORY.md,USER.md}`.
@@ -316,7 +339,7 @@ not passed in its environment.
   only if you trust the model with their side effects.
 - `bun test` covers memory semantics, Responses input conversion, the Infisical key registry,
   agent config overrides/access lists, agent discovery/resolution, server tool namespacing, token
-  estimation, SQLite session persistence/search, compaction, workspace tools, handoffs, and the
-  agent CLI; `bun run typecheck` for types. Tests live in `test/`.
+  estimation, SQLite session persistence/search, compaction, workspace tools, handoffs, server-tool
+  trace modes, and the agent CLI; `bun run typecheck` for types. Tests live in `test/`.
 - Client keys are hashed for lookup and never logged. Infisical failures keep the last known good
   key set; an empty initial load keeps the API at 503 instead of running open.

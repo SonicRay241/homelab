@@ -7,6 +7,7 @@ import { HandoffStore, handoffFile, renderHandoffMarkdown, type HandoffStatus } 
 import { SseWriter } from "./src/openai.ts";
 import { RequestError, runResponse } from "./src/runner.ts";
 import { SessionStore, sessionFile } from "./src/sessions.ts";
+import { parseTraceMode, type TraceMode } from "./src/trace.ts";
 
 const baseConfig = loadConfig();
 const agents = discoverAgents(baseConfig);
@@ -20,7 +21,7 @@ await registry.start();
 const CORS: Record<string, string> = {
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "GET, POST, OPTIONS",
-  "access-control-allow-headers": "authorization, content-type, x-api-key, api-key, openai-beta",
+  "access-control-allow-headers": "authorization, content-type, x-api-key, api-key, openai-beta, x-pi-trace",
 };
 
 function json(data: unknown, status = 200): Response {
@@ -69,6 +70,7 @@ function streamResponse(
   requestedModel: string,
   userId: string,
   userHash: string,
+  trace: TraceMode,
   body: Record<string, unknown>,
   signal: AbortSignal,
 ): Response {
@@ -86,6 +88,7 @@ function streamResponse(
           handoffStore,
           agentIds: allowedAgentIds,
           body,
+          trace,
           sse: writer,
           signal,
         });
@@ -224,6 +227,7 @@ const server = Bun.serve({
         typeof parsed.model === "string" && parsed.model.trim() ? parsed.model.trim() : agent.id;
       const sessionStore = sessionStores.get(agent.id);
       if (!sessionStore) return apiError(`No session store for agent ${agent.id}`, 500, "server_error");
+      const trace = parseTraceMode(request.headers.get("x-pi-trace"));
 
       if (parsed.stream === true) {
         return streamResponse(
@@ -233,6 +237,7 @@ const server = Bun.serve({
           requestedModel,
           userId,
           userHash,
+          trace,
           parsed,
           request.signal,
         );
@@ -249,6 +254,7 @@ const server = Bun.serve({
             handoffStore,
             agentIds: allowedAgentIds,
             body: parsed,
+            trace,
             signal: request.signal,
           }),
         );

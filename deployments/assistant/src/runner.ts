@@ -40,6 +40,7 @@ import {
   type RunUsage,
   type SseWriter,
 } from "./openai.ts";
+import { formatTrace, type TraceMode } from "./trace.ts";
 
 export class RequestError extends Error {
   constructor(
@@ -154,6 +155,8 @@ export interface RunOptions {
   handoffStore: HandoffStore;
   agentIds: string[];
   body: Record<string, unknown>;
+  /** Presentation-only trace of server tool calls; never sent to the model. */
+  trace: TraceMode;
   sse?: SseWriter;
   signal?: AbortSignal;
 }
@@ -201,13 +204,14 @@ function normalize(config: AssistantConfig, body: Record<string, unknown>, reque
   };
 }
 
-class ResponseEmitter {
+export class ResponseEmitter {
   readonly output: OutputItem[] = [];
   readonly usage: RunUsage = { inputTokens: 0, cachedTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0 };
   failure?: { code: string; message: string };
   incomplete = false;
 
   private message?: { id: string; text: string; index: number };
+  private readonly serverToolArgs = new Map<string, unknown>();
   private readonly createdAt = Math.floor(Date.now() / 1000);
 
   constructor(
@@ -225,6 +229,7 @@ class ResponseEmitter {
       store: boolean;
       metadata: Record<string, unknown>;
       clientToolNames: Set<string>;
+      trace: TraceMode;
       sse?: SseWriter;
     },
   ) {}
@@ -322,6 +327,27 @@ class ResponseEmitter {
     this.sse?.send("response.output_item.done", { output_index: index, item });
   }
 
+  private appendTrace(trace: string): void {
+    if (!trace) return;
+    const message = this.ensureMessageItem();
+    const prefix = !message.text
+      ? ""
+      : message.text.endsWith("\n\n")
+        ? ""
+        : message.text.endsWith("\n")
+          ? "\n"
+          : "\n\n";
+    const delta = `${prefix}${trace}\n\n`;
+    message.text += delta;
+    this.sse?.send("response.output_text.delta", {
+      item_id: message.id,
+      output_index: message.index,
+      content_index: 0,
+      delta,
+      logprobs: [],
+    });
+  }
+
   private addUsage(message: AssistantMessage): void {
     const usage = message.usage;
     const input = usage.input + usage.cacheRead + usage.cacheWrite;
@@ -351,7 +377,17 @@ class ResponseEmitter {
         const message = event.message;
         if (message.role !== "assistant") return;
         this.addUsage(message);
-        this.finishMessage();
+        const hasServerCall = message.content.some(
+          (part) => part.type === "toolCall" && isServerToolName(part.name),
+        );
+        const hasClientCall = message.content.some(
+          (part) => part.type === "toolCall" && this.options.clientToolNames.has(part.name),
+        );
+        // Keep the message item open across a server-tool round so the trace and the
+        // model's next text stay in one assistant message. Client calls must be
+        // emitted after the text, so close first when the batch includes one.
+        const traceServerCall = hasServerCall && this.options.trace !== "no";
+        if (!traceServerCall || hasClientCall) this.finishMessage();
         for (const part of message.content) {
           if (part.type !== "toolCall") continue;
           if (!part.id) part.id = newId("call");
@@ -365,6 +401,26 @@ class ResponseEmitter {
         } else if (message.stopReason === "length") {
           this.incomplete = true;
         }
+        return;
+      }
+      case "tool_execution_start": {
+        if (isServerToolName(event.toolName)) this.serverToolArgs.set(event.toolCallId, event.args);
+        return;
+      }
+      case "tool_execution_end": {
+        if (!isServerToolName(event.toolName)) return;
+        const args = this.serverToolArgs.get(event.toolCallId);
+        this.serverToolArgs.delete(event.toolCallId);
+        this.appendTrace(
+          formatTrace({
+            mode: this.options.trace,
+            toolCallId: event.toolCallId,
+            toolName: event.toolName,
+            args,
+            result: event.result,
+            isError: event.isError,
+          }),
+        );
         return;
       }
       default:
@@ -489,6 +545,7 @@ export async function runResponse(options: RunOptions): Promise<Record<string, u
     store: normalized.store,
     metadata: normalized.metadata,
     clientToolNames,
+    trace: options.trace,
     sse: options.sse,
   });
 
