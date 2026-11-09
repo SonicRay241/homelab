@@ -39,6 +39,7 @@ function baseConfig(agentsDir: string, agentDir: string): AssistantConfig {
     agentId: "default",
     allowedUsers: [],
     deniedUsers: [],
+    otel: null,
     infisical: {
       baseUrl: "https://secrets.example",
       clientId: "id",

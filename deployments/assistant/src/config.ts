@@ -1,5 +1,10 @@
 import { resolveAgentDir, resolveAgentsDir, resolveBasedir } from "./basedir.ts";
 
+export interface OtelConfig {
+  endpoint: string;
+  serviceName: string;
+}
+
 export interface InfisicalConfig {
   baseUrl: string;
   clientId: string;
@@ -39,6 +44,7 @@ export interface AssistantConfig {
   /** These user ids are always denied this agent. */
   deniedUsers: string[];
   infisical: InfisicalConfig;
+  otel: OtelConfig | null;
   refreshMs: number;
   /** Optional local fallback merged with Infisical secrets: client key -> user id. */
   staticKeys: Map<string, string>;
@@ -56,6 +62,20 @@ export function isUserAllowed(
 ): boolean {
   if (config.deniedUsers.includes(userId)) return false;
   return config.allowedUsers.length === 0 || config.allowedUsers.includes(userId);
+}
+
+function asBool(value: string | undefined): boolean {
+  return value !== undefined && ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
+}
+
+/** OTEL is disabled when no endpoint is configured or explicitly disabled. */
+export function loadOtelConfig(env: Record<string, string | undefined> = process.env): OtelConfig | null {
+  const endpoint = env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim();
+  if (asBool(env.OTEL_SDK_DISABLED) || !endpoint) return null;
+  return {
+    endpoint: endpoint.replace(/\/+$/, ""),
+    serviceName: env.OTEL_SERVICE_NAME?.trim() || "pi-assistant",
+  };
 }
 
 function required(name: string): string {
@@ -186,6 +206,7 @@ export function loadConfig(): AssistantConfig {
     agentId,
     allowedUsers: [],
     deniedUsers: [],
+    otel: loadOtelConfig(),
     infisical: {
       baseUrl: required("INFISICAL_BASE_URL").replace(/\/+$/, ""),
       clientId: required("INFISICAL_CLIENT_ID"),

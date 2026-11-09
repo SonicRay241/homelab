@@ -48,6 +48,7 @@ function config(overrides: Partial<AssistantConfig> = {}): AssistantConfig {
     agentId: "default",
     allowedUsers: [],
     deniedUsers: [],
+    otel: null,
     infisical: { baseUrl: "x", clientId: "x", clientSecret: "x", projectId: "x", environment: "prod", secretPath: "/" },
     refreshMs: 60_000,
     staticKeys: new Map(),

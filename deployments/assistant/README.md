@@ -204,6 +204,9 @@ BASEDIR/agent/
 | `MAX_INPUT_TOKENS` | no | `0` | Estimated input-token cap per request; `0` disables it |
 | `COMPACTION_THRESHOLD` | no | `0.75` | Fraction of `CONTEXT_WINDOW` that triggers compaction; `0` disables |
 | `COMPACTION_KEEP_TURNS` | no | `6` | Recent conversation turns kept verbatim |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | no | – | OTLP/HTTP collector base URL; telemetry is off when unset |
+| `OTEL_SERVICE_NAME` | no | `pi-assistant` | `service.name` resource attribute |
+| `OTEL_SDK_DISABLED` | no | – | `1`/`true` turns telemetry off explicitly |
 
 Local fallback keys must be at least 12 characters. They are useful for tests/offline work and are
 always accepted alongside Infisical secrets.
@@ -260,6 +263,22 @@ curl http://localhost:8787/v1/responses \
   -H 'x-pi-trace: openwebui' \
   -d '{"model":"default","input":"Read README.md and summarize it."}'
 ```
+
+## Telemetry
+
+OTEL is enabled by setting `OTEL_EXPORTER_OTLP_ENDPOINT` (for example
+`http://otel-collector:4318`). Spans and metrics are exported over OTLP/HTTP; telemetry is a no-op
+when the endpoint is unset or `OTEL_SDK_DISABLED` is true.
+
+- Span per request: `{method} {route}` with `http.request.method`, `http.route`, `url.path`,
+  `http.response.status_code`, `assistant.key_hash`, `assistant.username`, `assistant.agent`,
+  `assistant.requested_model`, `gen_ai.request.model`, `gen_ai.usage.input_tokens|output_tokens|cached_input_tokens`,
+  and `assistant.response_id`.
+- `gen_ai.usage.input_tokens` is uncached input (`inputTokens - cachedTokens`, clamped at 0). Cached
+  tokens are reported separately, so `input + cached + output` is the true total.
+- Metrics: `assistant.requests`, `assistant.request.duration` (ms), and `assistant.tokens`
+  (`gen_ai.token.type=input|output|cached`).
+- Spans export in batches (default 5s); metrics every 15s. Both are flushed on `SIGTERM`.
 
 ## Memory
 
@@ -377,7 +396,7 @@ not passed in its environment.
 - `bun test` covers memory semantics, Responses input conversion, the Infisical key registry,
   agent config overrides/access lists, agent discovery/resolution, server tool namespacing, token
   estimation, SQLite session persistence/search, compaction, workspace tools, handoffs, MCP
-  config/bridge/tool naming, server-tool trace modes, and the agent CLI; `bun run typecheck` for
-  types. Tests live in `test/`.
+  config/bridge/tool naming, server-tool trace modes, telemetry export, and the agent CLI;
+  `bun run typecheck` for types. Tests live in `test/`.
 - Client keys are hashed for lookup and never logged. Infisical failures keep the last known good
   key set; an empty initial load keeps the API at 503 instead of running open.

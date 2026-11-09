@@ -41,6 +41,7 @@ import {
   type SseWriter,
 } from "./openai.ts";
 import { formatTrace, type TraceMode } from "./trace.ts";
+import type { RequestTelemetry } from "./telemetry.ts";
 
 export class RequestError extends Error {
   constructor(
@@ -159,6 +160,7 @@ export interface RunOptions {
   body: Record<string, unknown>;
   /** Presentation-only trace of server tool calls; never sent to the model. */
   trace: TraceMode;
+  telemetry?: RequestTelemetry;
   sse?: SseWriter;
   signal?: AbortSignal;
 }
@@ -591,6 +593,16 @@ export async function runResponse(options: RunOptions): Promise<Record<string, u
   }
 
   const response = emitter.complete();
+  const usage = emitter.usage;
+  options.telemetry?.recordUsage(
+    {
+      model: config.modelId,
+      input_tokens: Math.max(0, usage.inputTokens - usage.cachedTokens),
+      output_tokens: usage.outputTokens,
+      cached_input_tokens: usage.cachedTokens,
+    },
+    { "assistant.agent": config.agentId, "assistant.username": userId, "assistant.response_id": id },
+  );
 
   if (normalized.store) {
     const storedMessages = agent.state.messages.filter(
