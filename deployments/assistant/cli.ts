@@ -17,6 +17,7 @@ const CONFIG_EXAMPLE = `# Optional per-agent overrides. Everything unset comes f
 # apiUrl: https://ollama.example.com/v1
 # apiKey: sk-...
 # model: beam:cloud
+# vision: false
 # maxInputTokens: 100000
 # compactionThreshold: 0.75
 # compactionKeepTurns: 6
@@ -41,6 +42,7 @@ const SET_KEYS = new Set([
   "apiUrl",
   "apiKey",
   "model",
+  "vision",
   "maxInputTokens",
   "compactionThreshold",
   "compactionKeepTurns",
@@ -97,13 +99,17 @@ function parseEffort(raw: string): ReasoningEffort {
   return effort;
 }
 
-function parseValue(key: string, raw: string): string | number | string[] {
+function parseValue(key: string, raw: string): string | number | boolean | string[] {
   if (key === "allowedUsers" || key === "deniedUsers") {
     return raw
       .split(",")
       .map((user) => user.trim())
       .filter(Boolean)
       .map(validateUser);
+  }
+  if (key === "vision") {
+    if (raw !== "true" && raw !== "false") throw new Error("vision must be true or false");
+    return raw === "true";
   }
   if (key === "maxInputTokens") {
     const value = Number(raw);

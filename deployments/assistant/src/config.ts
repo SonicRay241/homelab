@@ -39,6 +39,8 @@ export interface AssistantConfig {
   modelIds: string[];
   contextWindow: number;
   maxTokens: number;
+  /** Whether the backend model accepts image input. Per-agent `config.yaml` may override. */
+  vision: boolean;
   /** Estimated input-token cap for one request; 0 disables the check. */
   maxInputTokens: number;
   /** Fraction of contextWindow that triggers automatic compaction; 0 disables it. */
@@ -221,6 +223,7 @@ export function loadConfig(): AssistantConfig {
     modelIds,
     contextWindow: intEnv("CONTEXT_WINDOW", 128_000),
     maxTokens: intEnv("MAX_TOKENS", 8_192),
+    vision: false,
     maxInputTokens: nonNegativeIntEnv("MAX_INPUT_TOKENS", 0),
     compactionThreshold: ratioEnv("COMPACTION_THRESHOLD", 0.75),
     compactionKeepTurns: Math.max(1, intEnv("COMPACTION_KEEP_TURNS", 6)),

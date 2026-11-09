@@ -39,6 +39,7 @@ function config(overrides: Partial<AssistantConfig> = {}): AssistantConfig {
     modelIds: ["model"],
     contextWindow: 1_000,
     maxTokens: 100,
+    vision: false,
     maxInputTokens: 0,
     compactionThreshold: 0.75,
     compactionKeepTurns: 2,

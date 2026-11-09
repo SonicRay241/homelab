@@ -92,6 +92,7 @@ compatibility, but only agent ids are listed.
 apiUrl: https://other-backend.example/v1
 apiKey: sk-other-backend
 model: other:cloud
+vision: true
 maxInputTokens: 100000
 compactionThreshold: 0.75
 compactionKeepTurns: 6
@@ -111,6 +112,8 @@ allowedReasoningEfforts:
 - The file is read once at startup; restart to apply changes.
 - Unknown keys, non-string values, and empty values fail startup instead of being ignored.
 - `maxInputTokens` is a non-negative integer; `0` disables the input check for that agent.
+- `vision` declares that the agent's model accepts image input (default `false`; no env switch).
+  When `false`, images from clients or tools are dropped instead of being sent to the backend.
 - `compactionThreshold` is in `[0,1]` (`0` disables compaction); `compactionKeepTurns` is a
   positive integer.
 - `allowedUsers` is an optional whitelist; when non-empty, only those Infisical user ids may use the
@@ -170,6 +173,7 @@ bun run cli show research
 bun run cli set research maxInputTokens 100000
 bun run cli set research apiKey sk-...
 bun run cli set research reasoningEffort high
+bun run cli set research vision true
 bun run cli set research allowedReasoningEfforts low,high
 bun run cli allow research bob
 bun run cli deny research mallory
@@ -202,8 +206,8 @@ BASEDIR/agent/
 - Backend `MODEL`/`MODEL_ALIASES` are accepted for the default agent only; this keeps old clients
   working. Agent ids win if an id collides with an alias.
 - Agent directories are discovered at startup; restart after adding, removing, or renaming one.
-- Each agent applies its own `config.yaml` overrides (backend URL/key/model, `maxInputTokens`,
-  `compactionThreshold`, `compactionKeepTurns`, `allowedUsers`, `deniedUsers`), SOUL prompt,
+- Each agent applies its own `config.yaml` overrides (backend URL/key/model, `vision`,
+  `maxInputTokens`, `compactionThreshold`, `compactionKeepTurns`, `allowedUsers`, `deniedUsers`), SOUL prompt,
   sessions, workspace, memory namespace, and `mcp.json` servers. Infisical, port, `BASEDIR`, and
   refresh settings remain process-wide.
 

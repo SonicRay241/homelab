@@ -23,6 +23,7 @@ const BASE: AssistantConfig = {
   modelIds: ["env-model", "env-alias"],
   contextWindow: 128_000,
   maxTokens: 8_192,
+  vision: false,
   maxInputTokens: 0,
   compactionThreshold: 0.75,
   compactionKeepTurns: 6,
@@ -96,6 +97,18 @@ allowedReasoningEfforts:
     });
   });
 
+  it("reads the vision flag", async () => {
+    expect(loadAgentOverrides(await agentDir("vision: true\n"))).toEqual({ vision: true });
+    expect(loadAgentOverrides(await agentDir("vision: false\n"))).toEqual({ vision: false });
+  });
+
+  it("rejects non-boolean vision values", async () => {
+    await expect(async () => loadAgentOverrides(await agentDir('vision: "true"\n'))).toThrow(
+      "must be true or false",
+    );
+    await expect(async () => loadAgentOverrides(await agentDir("vision: 1\n"))).toThrow("must be true or false");
+  });
+
   it("rejects invalid reasoning effort values", async () => {
     await expect(async () => loadAgentOverrides(await agentDir("reasoningEffort: turbo\n"))).toThrow(
       "must be one of",
@@ -167,6 +180,11 @@ describe("applyAgentOverrides", () => {
     expect(config.modelId).toBe(BASE.modelId);
     expect(config.modelIds).toEqual(["env-model", "env-alias"]);
     expect(config.maxInputTokens).toBe(0);
+  });
+
+  it("overrides vision and keeps the base default otherwise", () => {
+    expect(applyAgentOverrides(BASE, { vision: true }).vision).toBe(true);
+    expect(applyAgentOverrides(BASE, {}).vision).toBe(false);
   });
 
   it("overrides the input token limit", () => {

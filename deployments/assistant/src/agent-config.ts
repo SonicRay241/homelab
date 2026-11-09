@@ -14,6 +14,7 @@ const ALLOWED_KEYS = new Set([
   "apiUrl",
   "apiKey",
   "model",
+  "vision",
   "maxInputTokens",
   "compactionThreshold",
   "compactionKeepTurns",
@@ -27,6 +28,7 @@ export interface AgentOverrides {
   apiUrl?: string;
   apiKey?: string;
   model?: string;
+  vision?: boolean;
   maxInputTokens?: number;
   compactionThreshold?: number;
   compactionKeepTurns?: number;
@@ -69,6 +71,11 @@ function stringValue(value: unknown, key: string, file: string): string {
   return trimmed;
 }
 
+function booleanValue(value: unknown, key: string, file: string): boolean {
+  if (typeof value !== "boolean") throw new Error(`${file}: ${key} must be true or false`);
+  return value;
+}
+
 /**
  * Reads optional per-agent backend overrides from `<agentDir>/config.yaml`.
  * `.env` stays authoritative for everything not listed here; a missing file is fine.
@@ -99,6 +106,7 @@ export function loadAgentOverrides(agentDir: string): AgentOverrides {
   if ("apiUrl" in parsed) overrides.apiUrl = stringValue(parsed.apiUrl, "apiUrl", file).replace(/\/+$/, "");
   if ("apiKey" in parsed) overrides.apiKey = stringValue(parsed.apiKey, "apiKey", file);
   if ("model" in parsed) overrides.model = stringValue(parsed.model, "model", file);
+  if ("vision" in parsed) overrides.vision = booleanValue(parsed.vision, "vision", file);
   if ("maxInputTokens" in parsed) {
     const value = parsed.maxInputTokens;
     if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
@@ -143,6 +151,7 @@ export function applyAgentOverrides(config: AssistantConfig, overrides: AgentOve
     apiUrl: overrides.apiUrl ?? config.apiUrl,
     apiKey: overrides.apiKey ?? config.apiKey,
     modelId,
+    vision: overrides.vision ?? config.vision,
     maxInputTokens: overrides.maxInputTokens ?? config.maxInputTokens,
     compactionThreshold: overrides.compactionThreshold ?? config.compactionThreshold,
     compactionKeepTurns: overrides.compactionKeepTurns ?? config.compactionKeepTurns,

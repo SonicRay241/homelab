@@ -47,6 +47,8 @@ describe("agent CLI", () => {
     expect((await cli(["set", "research", "compactionThreshold", "0.5"], base)).code).toBe(0);
     expect((await cli(["set", "research", "apiKey", "super-secret"], base)).code).toBe(0);
     expect((await cli(["set", "research", "reasoningEffort", "high"], base)).code).toBe(0);
+    expect((await cli(["set", "research", "vision", "true"], base)).code).toBe(0);
+    expect((await cli(["set", "research", "vision", "yes"], base)).code).toBe(1);
     expect((await cli(["set", "research", "allowedReasoningEfforts", "low,high,none"], base)).code).toBe(0);
     expect((await cli(["allow", "research", "bob"], base)).code).toBe(0);
     expect((await cli(["deny", "research", "mallory"], base)).code).toBe(0);
@@ -59,6 +61,7 @@ describe("agent CLI", () => {
       allowedUsers: ["alice", "bob"],
       deniedUsers: ["mallory"],
       reasoningEffort: "high",
+      vision: true,
       allowedReasoningEfforts: ["low", "high", "off"],
     });
     expect(config.apiKey).toBe("super-secret");
@@ -66,6 +69,7 @@ describe("agent CLI", () => {
     const shown = await cli(["show", "research"], base);
     expect(shown.out).toContain("model: research:cloud");
     expect(shown.out).toContain("reasoningEffort: high");
+    expect(shown.out).toContain("vision: true");
     expect(shown.out).not.toContain("super-secret");
     expect(shown.out).toContain("***");
 

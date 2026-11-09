@@ -7,6 +7,8 @@
 # apiUrl: https://ollama.example.com/v1
 # apiKey: sk-...
 # model: beam:cloud
+# Whether the model accepts image input (default false).
+# vision: true
 # maxInputTokens: 100000
 # compactionThreshold: 0.75
 # compactionKeepTurns: 6

@@ -18,7 +18,7 @@ export function buildModel(config: AssistantConfig): Model<"openai-completions">
     baseUrl: config.apiUrl,
     reasoning,
     ...(reasoning ? { thinkingLevelMap: { xhigh: "xhigh" } } : {}),
-    input: ["text"],
+    input: config.vision ? ["text", "image"] : ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: config.contextWindow,
     maxTokens: config.maxTokens,

@@ -31,6 +31,7 @@ function baseConfig(agentsDir: string, agentDir: string): AssistantConfig {
     modelIds: ["env-model", "env-alias"],
     contextWindow: 128_000,
     maxTokens: 8_192,
+    vision: false,
     maxInputTokens: 0,
     compactionThreshold: 0.75,
     compactionKeepTurns: 6,
@@ -126,6 +127,14 @@ describe("resolveAgent", () => {
     expect(resolveAgent(agents, "default", "env-model")?.id).toBe("default");
     expect(resolveAgent(agents, "default", "env-alias")?.id).toBe("default");
     expect(resolveAgent(agents, "default", "nope")).toBeUndefined();
+  });
+});
+
+describe("buildModel input", () => {
+  it("advertises image input only when vision is enabled", () => {
+    const off = baseConfig("/tmp/assistant-agents", "/tmp/assistant-default");
+    expect(buildModel(off).input).toEqual(["text"]);
+    expect(buildModel({ ...off, vision: true }).input).toEqual(["text", "image"]);
   });
 });
 
