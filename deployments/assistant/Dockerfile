@@ -1,4 +1,5 @@
 FROM oven/bun:1-alpine
+RUN apk add --no-cache su-exec
 WORKDIR /app
 
 COPY package.json bun.lock ./
@@ -8,14 +9,17 @@ COPY index.ts cli.ts tsconfig.json ./
 COPY src ./src
 
 RUN mkdir -p /data && chown bun:bun /data
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod 755 /usr/local/bin/docker-entrypoint.sh
 
 ENV BASEDIR=/data \
     PORT=8787 \
-    BIND_HOST=0.0.0.0
+    BIND_HOST=0.0.0.0 \
+    HOME=/home/bun
 
 EXPOSE 8787
 VOLUME ["/data"]
-USER bun
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 STOPSIGNAL SIGTERM
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

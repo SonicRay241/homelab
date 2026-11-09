@@ -10,7 +10,7 @@ services:
       - BASE_API_URL=${BASE_API_URL}
       - API_KEY=${API_KEY}
       - PORT=8787
-      - BASEDIR=${BASEDIR}
+      - BASEDIR=/data
       # Token list is read from every secret in this Infisical folder; no API_KEYS env needed.
       - INFISICAL_BASE_URL=${INFISICAL_BASE_URL}
       - INFISICAL_CLIENT_ID=${INFISICAL_CLIENT_ID}
@@ -25,14 +25,18 @@ services:
 
       # Default agent config
       - MODEL=deepseek-v4.1-flash:1017-cloud
-      - AGENT_ID=${DEFAULT_AGENT_NAME}
+      - AGENT_ID=${DEFAULT_AGENT_NAME:-default}
       - CONTEXT_WINDOW=1000000
       - REASONING_EFFORT=high
     networks:
       - default
       - dokploy-network
     volumes:
-      - pi_assistant_data:/app/harness-cfg
+      - pi_assistant_data:/data
 
 volumes:
   pi_assistant_data:
+networks:
+  default:
+  dokploy-network:
+    external: true

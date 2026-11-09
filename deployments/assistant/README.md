@@ -60,17 +60,19 @@ bun run start
 
 ### Docker
 
-The image uses `oven/bun:1-alpine`, installs production dependencies, and runs as the `bun` user
-with `BASEDIR=/data`.
+The image uses `oven/bun:1-alpine`, installs production dependencies, and runs the server as the
+`bun` user with `BASEDIR=/data`. The entrypoint starts as root only long enough to ensure
+`BASEDIR` is writable by `bun`, then drops privileges. This repairs existing root-owned volumes.
 
 ```bash
 docker build -t pi-assistant .
 docker run --rm -p 8787:8787 --env-file .env -v pi-assistant-data:/data pi-assistant
 ```
 
-- Mount a named volume at `/data` (or a host directory the `bun` user can write).
+- Mount a named volume at `/data` (or a host directory the `bun` user can write). Root-owned
+  volumes are fixed automatically at startup.
 - Create an agent if the volume is empty, for example:
-  `docker exec -it <container> bun run cli.ts new default`
+  `docker exec -u bun -it <container> bun run cli.ts new default`
 - The base image does not include Node/npm. MCP configs that use `npx` need `bunx` instead, or an
   image extended with Node.
 
