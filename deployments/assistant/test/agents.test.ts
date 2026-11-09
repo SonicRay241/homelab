@@ -3,7 +3,8 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultAgent, discoverAgents, resolveAgent } from "../src/agents.ts";
-import type { AssistantConfig } from "../src/config.ts";
+import type { AssistantConfig, ReasoningEffort } from "../src/config.ts";
+import { buildModel } from "../src/model.ts";
 
 const dirs: string[] = [];
 
@@ -40,6 +41,8 @@ function baseConfig(agentsDir: string, agentDir: string): AssistantConfig {
     allowedUsers: [],
     deniedUsers: [],
     otel: null,
+    reasoningEffort: "off",
+    allowedReasoningEfforts: [],
     infisical: {
       baseUrl: "https://secrets.example",
       clientId: "id",
@@ -123,5 +126,28 @@ describe("resolveAgent", () => {
     expect(resolveAgent(agents, "default", "env-model")?.id).toBe("default");
     expect(resolveAgent(agents, "default", "env-alias")?.id).toBe("default");
     expect(resolveAgent(agents, "default", "nope")).toBeUndefined();
+  });
+});
+
+describe("buildModel reasoning", () => {
+  it("enables reasoning only when a non-off effort is configured or selectable", async () => {
+    const root = await tempDir("assistant-agents-");
+    const defaultDir = await tempDir("assistant-default-");
+    const off = baseConfig(root, defaultDir);
+
+    expect(buildModel(off).reasoning).toBe(false);
+    expect(buildModel(off).compat?.supportsReasoningEffort).toBe(false);
+
+    const defaulted = { ...off, reasoningEffort: "medium" as const };
+    expect(buildModel(defaulted).reasoning).toBe(true);
+    expect(buildModel(defaulted).compat?.supportsReasoningEffort).toBe(true);
+
+    const selectable = {
+      ...off,
+      reasoningEffort: "off" as const,
+      allowedReasoningEfforts: ["low", "high"] as ReasoningEffort[],
+    };
+    expect(buildModel(selectable).reasoning).toBe(true);
+    expect(buildModel(selectable).compat?.supportsReasoningEffort).toBe(true);
   });
 });

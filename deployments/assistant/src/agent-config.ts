@@ -1,6 +1,12 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { isValidUserId, type AssistantConfig } from "./config.ts";
+import {
+  isValidUserId,
+  normalizeReasoningEffort,
+  REASONING_EFFORTS,
+  type AssistantConfig,
+  type ReasoningEffort,
+} from "./config.ts";
 import { isRecord } from "./guards.ts";
 
 export const AGENT_CONFIG_FILE = "config.yaml";
@@ -13,6 +19,8 @@ const ALLOWED_KEYS = new Set([
   "compactionKeepTurns",
   "allowedUsers",
   "deniedUsers",
+  "reasoningEffort",
+  "allowedReasoningEfforts",
 ]);
 
 export interface AgentOverrides {
@@ -24,6 +32,8 @@ export interface AgentOverrides {
   compactionKeepTurns?: number;
   allowedUsers?: string[];
   deniedUsers?: string[];
+  reasoningEffort?: ReasoningEffort;
+  allowedReasoningEfforts?: ReasoningEffort[];
 }
 
 function userList(value: unknown, key: string, file: string): string[] {
@@ -38,6 +48,18 @@ function userList(value: unknown, key: string, file: string): string[] {
     users.push(user);
   }
   return Array.from(new Set(users));
+}
+
+function reasoningEffortValue(value: unknown, key: string, file: string): ReasoningEffort {
+  if (typeof value !== "string") throw new Error(`${file}: ${key} must be a string`);
+  const effort = normalizeReasoningEffort(value);
+  if (!effort) throw new Error(`${file}: ${key} must be one of: ${REASONING_EFFORTS.join(", ")}`);
+  return effort;
+}
+
+function reasoningEffortList(value: unknown, key: string, file: string): ReasoningEffort[] {
+  if (!Array.isArray(value)) throw new Error(`${file}: ${key} must be an array of efforts`);
+  return Array.from(new Set(value.map((entry) => reasoningEffortValue(entry, key, file))));
 }
 
 function stringValue(value: unknown, key: string, file: string): string {
@@ -100,6 +122,16 @@ export function loadAgentOverrides(agentDir: string): AgentOverrides {
   }
   if ("allowedUsers" in parsed) overrides.allowedUsers = userList(parsed.allowedUsers, "allowedUsers", file);
   if ("deniedUsers" in parsed) overrides.deniedUsers = userList(parsed.deniedUsers, "deniedUsers", file);
+  if ("reasoningEffort" in parsed) {
+    overrides.reasoningEffort = reasoningEffortValue(parsed.reasoningEffort, "reasoningEffort", file);
+  }
+  if ("allowedReasoningEfforts" in parsed) {
+    overrides.allowedReasoningEfforts = reasoningEffortList(
+      parsed.allowedReasoningEfforts,
+      "allowedReasoningEfforts",
+      file,
+    );
+  }
   return overrides;
 }
 
@@ -116,6 +148,8 @@ export function applyAgentOverrides(config: AssistantConfig, overrides: AgentOve
     compactionKeepTurns: overrides.compactionKeepTurns ?? config.compactionKeepTurns,
     allowedUsers: overrides.allowedUsers ?? config.allowedUsers,
     deniedUsers: overrides.deniedUsers ?? config.deniedUsers,
+    reasoningEffort: overrides.reasoningEffort ?? config.reasoningEffort,
+    allowedReasoningEfforts: overrides.allowedReasoningEfforts ?? config.allowedReasoningEfforts,
     // A model override replaces the advertised list; env aliases belong to the default model.
     modelIds: overrides.model ? [modelId] : config.modelIds,
   };

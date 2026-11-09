@@ -33,6 +33,8 @@ const BASE: AssistantConfig = {
   allowedUsers: [],
   deniedUsers: [],
   otel: null,
+  reasoningEffort: "off",
+  allowedReasoningEfforts: [],
   infisical: {
     baseUrl: "https://secrets.example",
     clientId: "id",
@@ -78,6 +80,32 @@ deniedUsers:
       allowedUsers: ["alice", "bob"],
       deniedUsers: ["mallory"],
     });
+  });
+
+  it("reads reasoning effort and the per-request allowlist", async () => {
+    const dir = await agentDir(`
+reasoningEffort: high
+allowedReasoningEfforts:
+  - low
+  - high
+  - none
+`);
+    expect(loadAgentOverrides(dir)).toEqual({
+      reasoningEffort: "high",
+      allowedReasoningEfforts: ["low", "high", "off"],
+    });
+  });
+
+  it("rejects invalid reasoning effort values", async () => {
+    await expect(async () => loadAgentOverrides(await agentDir("reasoningEffort: turbo\n"))).toThrow(
+      "must be one of",
+    );
+    await expect(async () => loadAgentOverrides(await agentDir("allowedReasoningEfforts: low\n"))).toThrow(
+      "must be an array",
+    );
+    await expect(async () => loadAgentOverrides(await agentDir("allowedReasoningEfforts: [turbo]\n"))).toThrow(
+      "must be one of",
+    );
   });
 
   it("allows maxInputTokens: 0 to disable the limit per agent", async () => {
@@ -153,6 +181,16 @@ describe("applyAgentOverrides", () => {
     expect(config.compactionKeepTurns).toBe(4);
     expect(BASE.compactionThreshold).toBe(0.75);
     expect(BASE.compactionKeepTurns).toBe(6);
+  });
+
+  it("overrides reasoning effort and allowlist", () => {
+    const config = applyAgentOverrides(BASE, {
+      reasoningEffort: "medium",
+      allowedReasoningEfforts: ["low", "medium", "high"],
+    });
+    expect(config.reasoningEffort).toBe("medium");
+    expect(config.allowedReasoningEfforts).toEqual(["low", "medium", "high"]);
+    expect(BASE.reasoningEffort).toBe("off");
   });
 
   it("overrides access lists", () => {

@@ -1,5 +1,17 @@
 import { resolveAgentDir, resolveAgentsDir, resolveBasedir } from "./basedir.ts";
 
+export const REASONING_EFFORTS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
+
+/** Accepts `none` as an alias for `off`. */
+export function normalizeReasoningEffort(value: string): ReasoningEffort | undefined {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "none") return "off";
+  return (REASONING_EFFORTS as readonly string[]).includes(normalized)
+    ? (normalized as ReasoningEffort)
+    : undefined;
+}
+
 export interface OtelConfig {
   endpoint: string;
   serviceName: string;
@@ -46,6 +58,10 @@ export interface AssistantConfig {
   infisical: InfisicalConfig;
   otel: OtelConfig | null;
   refreshMs: number;
+  /** Default reasoning effort; `off` disables reasoning. */
+  reasoningEffort: ReasoningEffort;
+  /** Efforts clients may select per request; empty disables request selection. */
+  allowedReasoningEfforts: ReasoningEffort[];
   /** Optional local fallback merged with Infisical secrets: client key -> user id. */
   staticKeys: Map<string, string>;
 }
@@ -76,6 +92,14 @@ export function loadOtelConfig(env: Record<string, string | undefined> = process
     endpoint: endpoint.replace(/\/+$/, ""),
     serviceName: env.OTEL_SERVICE_NAME?.trim() || "pi-assistant",
   };
+}
+
+function reasoningEffortEnv(): ReasoningEffort {
+  const raw = process.env.REASONING_EFFORT?.trim();
+  if (!raw) return "off";
+  const effort = normalizeReasoningEffort(raw);
+  if (!effort) throw new Error(`REASONING_EFFORT must be one of: ${REASONING_EFFORTS.join(", ")}`);
+  return effort;
 }
 
 function required(name: string): string {
@@ -207,6 +231,8 @@ export function loadConfig(): AssistantConfig {
     allowedUsers: [],
     deniedUsers: [],
     otel: loadOtelConfig(),
+    reasoningEffort: reasoningEffortEnv(),
+    allowedReasoningEfforts: [],
     infisical: {
       baseUrl: required("INFISICAL_BASE_URL").replace(/\/+$/, ""),
       clientId: required("INFISICAL_CLIENT_ID"),

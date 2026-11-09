@@ -3,7 +3,12 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { join } from "node:path";
 import { loadAgentOverrides, writeAgentOverrides, type AgentOverrides } from "./src/agent-config.ts";
 import { resolveBasedir, resolveAgentsDir } from "./src/basedir.ts";
-import { isValidUserId } from "./src/config.ts";
+import {
+  isValidUserId,
+  normalizeReasoningEffort,
+  REASONING_EFFORTS,
+  type ReasoningEffort,
+} from "./src/config.ts";
 import { mcpConfigFile, parseMcpConfig } from "./src/mcp.ts";
 
 const CONFIG_EXAMPLE = `# Optional per-agent overrides. Everything unset comes from .env.
@@ -19,6 +24,11 @@ const CONFIG_EXAMPLE = `# Optional per-agent overrides. Everything unset comes f
 #   - alice
 # deniedUsers:
 #   - mallory
+# reasoningEffort: off
+# allowedReasoningEfforts:
+#   - low
+#   - medium
+#   - high
 `;
 
 const MCP_EXAMPLE = `{
@@ -36,6 +46,8 @@ const SET_KEYS = new Set([
   "compactionKeepTurns",
   "allowedUsers",
   "deniedUsers",
+  "reasoningEffort",
+  "allowedReasoningEfforts",
 ]);
 
 function parseFlags(args: string[]): { positionals: string[]; flags: Map<string, string | true> } {
@@ -79,6 +91,12 @@ function validateUser(user: string): string {
   return user;
 }
 
+function parseEffort(raw: string): ReasoningEffort {
+  const effort = normalizeReasoningEffort(raw);
+  if (!effort) throw new Error(`reasoning effort must be one of: ${REASONING_EFFORTS.join(", ")}`);
+  return effort;
+}
+
 function parseValue(key: string, raw: string): string | number | string[] {
   if (key === "allowedUsers" || key === "deniedUsers") {
     return raw
@@ -101,6 +119,18 @@ function parseValue(key: string, raw: string): string | number | string[] {
     const value = Number(raw);
     if (!Number.isFinite(value) || value < 0 || value > 1) throw new Error("compactionThreshold must be between 0 and 1");
     return value;
+  }
+  if (key === "reasoningEffort") return parseEffort(raw);
+  if (key === "allowedReasoningEfforts") {
+    return Array.from(
+      new Set(
+        raw
+          .split(",")
+          .map((effort) => effort.trim())
+          .filter(Boolean)
+          .map(parseEffort),
+      ),
+    );
   }
   return raw;
 }
@@ -167,6 +197,15 @@ function cmdNew(positionals: string[], flags: Map<string, string | true>): void 
   const deny = splitUsers(flags.get("deny"));
   if (allow.length) overrides.allowedUsers = allow.map(validateUser);
   if (deny.length) overrides.deniedUsers = deny.map(validateUser);
+  if (typeof flags.get("reasoning-effort") === "string") {
+    overrides.reasoningEffort = parseEffort(String(flags.get("reasoning-effort")));
+  }
+  if (typeof flags.get("allowed-reasoning-efforts") === "string") {
+    overrides.allowedReasoningEfforts = parseValue(
+      "allowedReasoningEfforts",
+      String(flags.get("allowed-reasoning-efforts")),
+    ) as ReasoningEffort[];
+  }
   if (Object.keys(overrides).length) writeAgentOverrides(dir, overrides);
 
   console.log(`created ${name} at ${dir}`);

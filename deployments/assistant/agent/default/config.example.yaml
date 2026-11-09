@@ -14,3 +14,10 @@
 #   - alice
 # deniedUsers:
 #   - mallory
+# Default reasoning effort: off, minimal, low, medium, high, xhigh.
+# reasoningEffort: off
+# Efforts clients may select per request (empty = default only).
+# allowedReasoningEfforts:
+#   - low
+#   - medium
+#   - high

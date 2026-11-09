@@ -7,13 +7,17 @@ import type { AssistantConfig } from "./config.ts";
  * for limits, pricing and compat flags.
  */
 export function buildModel(config: AssistantConfig): Model<"openai-completions"> {
+  const reasoning =
+    config.reasoningEffort !== "off" ||
+    config.allowedReasoningEfforts.some((effort) => effort !== "off");
   return {
     id: config.modelId,
     name: config.modelId,
     api: "openai-completions",
     provider: "assistant-backend",
     baseUrl: config.apiUrl,
-    reasoning: false,
+    reasoning,
+    ...(reasoning ? { thinkingLevelMap: { xhigh: "xhigh" } } : {}),
     input: ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: config.contextWindow,
@@ -21,7 +25,7 @@ export function buildModel(config: AssistantConfig): Model<"openai-completions">
     compat: {
       supportsStore: false,
       supportsDeveloperRole: false,
-      supportsReasoningEffort: false,
+      supportsReasoningEffort: reasoning,
       supportsUsageInStreaming: true,
       maxTokensField: "max_tokens",
       requiresToolResultName: false,

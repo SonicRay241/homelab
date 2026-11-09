@@ -319,6 +319,7 @@ export interface ResponseShapeOptions {
   maxOutputTokens?: number;
   store: boolean;
   metadata: Record<string, unknown>;
+  reasoningEffort?: string | null;
   error?: { code: string; message: string } | null;
   incompleteReason?: "max_output_tokens" | "content_filter";
 }
@@ -339,7 +340,7 @@ export function responseShape(options: ResponseShapeOptions): Record<string, unk
     output_text: options.output.flatMap((item) => item.content?.map((part) => part.text) ?? []).join(""),
     parallel_tool_calls: options.parallelToolCalls,
     previous_response_id: options.previousResponseId ?? null,
-    reasoning: { effort: null, summary: null },
+    reasoning: { effort: options.reasoningEffort ?? null, summary: null },
     store: options.store,
     temperature: options.temperature,
     text: { format: { type: "text" } },

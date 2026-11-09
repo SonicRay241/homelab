@@ -109,6 +109,26 @@ describe("responseShape", () => {
       metadata: {},
     });
     expect(inProgress.usage).toBeNull();
+    expect(inProgress.reasoning).toEqual({ effort: null, summary: null });
+
+    const completed = responseShape({
+      id: "resp_1",
+      createdAt: 1,
+      status: "completed",
+      model: "m",
+      output: [],
+      usage: { inputTokens: 0, cachedTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0 },
+      instructions: "",
+      tools: [],
+      toolChoice: "auto",
+      parallelToolCalls: true,
+      temperature: 1,
+      topP: 1,
+      store: true,
+      metadata: {},
+      reasoningEffort: "high",
+    });
+    expect(completed.reasoning).toEqual({ effort: "high", summary: null });
 
     const item = outputFunctionCallItem("fc_1", "call_1", "lookup", { q: "x" });
     expect(item.arguments).toBe('{"q":"x"}');

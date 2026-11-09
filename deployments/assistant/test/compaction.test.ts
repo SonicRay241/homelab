@@ -49,6 +49,8 @@ function config(overrides: Partial<AssistantConfig> = {}): AssistantConfig {
     allowedUsers: [],
     deniedUsers: [],
     otel: null,
+    reasoningEffort: "off",
+    allowedReasoningEfforts: [],
     infisical: { baseUrl: "x", clientId: "x", clientSecret: "x", projectId: "x", environment: "prod", secretPath: "/" },
     refreshMs: 60_000,
     staticKeys: new Map(),

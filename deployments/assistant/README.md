@@ -97,6 +97,11 @@ allowedUsers:
   - alice
 deniedUsers:
   - mallory
+reasoningEffort: medium
+allowedReasoningEfforts:
+  - low
+  - medium
+  - high
 ```
 
 - `.env` is still required: `BASE_API_URL`, `API_KEY`, and `MODEL` are the defaults.
@@ -111,6 +116,9 @@ deniedUsers:
   user's `/v1/models` and return `403 user_not_allowed`.
 - Overriding `model` changes that agent's backend model; it does not change the agent id listed in
   `/v1/models`. Env `MODEL_ALIASES` are accepted for the default agent but are not listed.
+- `reasoningEffort` sets this agent's default effort and overrides `REASONING_EFFORT`.
+  `allowedReasoningEfforts` lists the alternatives a request may select; the default is always
+  accepted. Empty means only the default is allowed.
 - `config.yaml` is gitignored because it can contain an API key; commit
   `config.example.yaml` instead.
 
@@ -159,6 +167,8 @@ bun run cli new research --model research:cloud --allow alice
 bun run cli show research
 bun run cli set research maxInputTokens 100000
 bun run cli set research apiKey sk-...
+bun run cli set research reasoningEffort high
+bun run cli set research allowedReasoningEfforts low,high
 bun run cli allow research bob
 bun run cli deny research mallory
 bun run cli validate
@@ -203,6 +213,7 @@ BASEDIR/agent/
 | `API_KEY` | yes | – | Backend credential (never sent to clients) |
 | `MODEL` | no | `beam:cloud` | Default backend model |
 | `MODEL_ALIASES` | no | – | Extra accepted `model` values for the default agent (not listed in `/v1/models`) |
+| `REASONING_EFFORT` | no | `off` | Default effort: `off`, `minimal`, `low`, `medium`, `high`, `xhigh` |
 | `INFISICAL_BASE_URL` | yes | – | Infisical instance URL |
 | `INFISICAL_CLIENT_ID` / `INFISICAL_CLIENT_SECRET` | yes | – | Universal Auth machine identity |
 | `INFISICAL_PROJECT_ID` | yes | – | Project holding the user secrets |
@@ -237,6 +248,12 @@ curl http://localhost:8787/v1/models -H "Authorization: Bearer $KEY"
 curl http://localhost:8787/v1/responses \
   -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
   -d '{"model":"default","input":"Remember that my timezone is CET, then say ok."}'
+
+# select a per-request reasoning effort (must be in allowedReasoningEfforts)
+curl http://localhost:8787/v1/responses \
+  -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -d '{"model":"default","input":"Solve this carefully.","reasoning":{"effort":"high"}}'
+# Chat Completions-style clients may also send top-level `reasoning_effort`.
 
 # client-side tool
 curl http://localhost:8787/v1/responses \
@@ -412,7 +429,7 @@ not passed in its environment.
 - `bun test` covers memory semantics, Responses input conversion, the Infisical key registry,
   agent config overrides/access lists, agent discovery/resolution, server tool namespacing, token
   estimation, SQLite session persistence/search, compaction, workspace tools, handoffs, MCP
-  config/bridge/tool naming, server-tool trace modes, telemetry export, and the agent CLI;
-  `bun run typecheck` for types. Tests live in `test/`.
+  config/bridge/tool naming, reasoning effort parsing/selection, server-tool trace modes, telemetry
+  export, and the agent CLI; `bun run typecheck` for types. Tests live in `test/`.
 - Client keys are hashed for lookup and never logged. Infisical failures keep the last known good
   key set; an empty initial load keeps the API at 503 instead of running open.

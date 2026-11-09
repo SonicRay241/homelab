@@ -3,14 +3,19 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { Agent, type AgentEvent, type AgentTool } from "@mariozechner/pi-agent-core";
 import {
-  streamOpenAICompletions,
+  streamSimpleOpenAICompletions,
   Type,
   type AssistantMessage,
   type Message,
   type Model,
   type ToolCall,
 } from "@mariozechner/pi-ai";
-import type { AssistantConfig } from "./config.ts";
+import {
+  normalizeReasoningEffort,
+  REASONING_EFFORTS,
+  type AssistantConfig,
+  type ReasoningEffort,
+} from "./config.ts";
 import { compactMessages, compactionTokenThreshold, createLlmSummarizer } from "./compaction.ts";
 import { isRecord } from "./guards.ts";
 import { MemoryStore, MEMORY_INSTRUCTIONS } from "./memory.ts";
@@ -52,6 +57,19 @@ export class RequestError extends Error {
     super(message);
     this.name = "RequestError";
   }
+}
+
+export function reasoningEffortsForConfig(
+  config: Pick<AssistantConfig, "reasoningEffort" | "allowedReasoningEfforts">,
+): ReasoningEffort[] {
+  return Array.from(new Set([config.reasoningEffort, ...config.allowedReasoningEfforts]));
+}
+
+export function isReasoningEffortAllowed(
+  config: Pick<AssistantConfig, "reasoningEffort" | "allowedReasoningEfforts">,
+  effort: ReasoningEffort,
+): boolean {
+  return reasoningEffortsForConfig(config).includes(effort);
 }
 
 export function memoryDirectory(config: AssistantConfig, userId: string): string {
@@ -177,9 +195,22 @@ interface Normalized {
   topP: number;
   maxOutputTokens?: number;
   metadata: Record<string, unknown>;
+  reasoningEffort: ReasoningEffort;
   choice: ReturnType<typeof toolChoice>;
   input: unknown;
   rawInstructions: string;
+}
+
+export function requestReasoningEffort(body: Record<string, unknown>): ReasoningEffort | undefined {
+  const nested = isRecord(body.reasoning) ? body.reasoning.effort : body.reasoning;
+  const raw = nested ?? body.reasoning_effort;
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "string") throw new RequestError("reasoning effort must be a string");
+  const effort = normalizeReasoningEffort(raw);
+  if (!effort) {
+    throw new RequestError(`reasoning effort must be one of: ${REASONING_EFFORTS.join(", ")}`);
+  }
+  return effort;
 }
 
 function normalize(config: AssistantConfig, body: Record<string, unknown>, requestedModel: string): Normalized {
@@ -189,6 +220,15 @@ function normalize(config: AssistantConfig, body: Record<string, unknown>, reque
   const maxOutputTokens = body.max_output_tokens;
   if (maxOutputTokens !== undefined && maxOutputTokens !== null && typeof maxOutputTokens !== "number") {
     throw new RequestError("max_output_tokens must be a number");
+  }
+  const requestedReasoningEffort = requestReasoningEffort(body);
+  if (requestedReasoningEffort && !isReasoningEffortAllowed(config, requestedReasoningEffort)) {
+    throw new RequestError(
+      `Reasoning effort ${requestedReasoningEffort} is not allowed for agent ${config.agentId} ` +
+        `(allowed: ${reasoningEffortsForConfig(config).join(", ")})`,
+      400,
+      "reasoning_effort_not_allowed",
+    );
   }
   return {
     requestedModel,
@@ -202,6 +242,7 @@ function normalize(config: AssistantConfig, body: Record<string, unknown>, reque
     topP: numberField(body.top_p, 1),
     maxOutputTokens: typeof maxOutputTokens === "number" ? maxOutputTokens : undefined,
     metadata: isRecord(body.metadata) ? body.metadata : {},
+    reasoningEffort: requestedReasoningEffort ?? config.reasoningEffort,
     choice: toolChoice(body.tool_choice),
     input: body.input,
     rawInstructions: instructionsText(body.instructions),
@@ -232,6 +273,7 @@ export class ResponseEmitter {
       maxOutputTokens?: number;
       store: boolean;
       metadata: Record<string, unknown>;
+      reasoningEffort: ReasoningEffort;
       clientToolNames: Set<string>;
       trace: TraceMode;
       sse?: SseWriter;
@@ -260,6 +302,7 @@ export class ResponseEmitter {
       maxOutputTokens: this.options.maxOutputTokens,
       store: this.options.store,
       metadata: this.options.metadata,
+      reasoningEffort: this.options.reasoningEffort === "off" ? null : this.options.reasoningEffort,
       error: this.failure,
       incompleteReason: this.incomplete ? "max_output_tokens" : undefined,
     });
@@ -549,6 +592,7 @@ export async function runResponse(options: RunOptions): Promise<Record<string, u
     maxOutputTokens: normalized.maxOutputTokens,
     store: normalized.store,
     metadata: normalized.metadata,
+    reasoningEffort: normalized.reasoningEffort,
     clientToolNames,
     trace: options.trace,
     sse: options.sse,
@@ -560,19 +604,20 @@ export async function runResponse(options: RunOptions): Promise<Record<string, u
       model,
       messages: initialMessages,
       tools,
-      thinkingLevel: "off",
+      thinkingLevel: normalized.reasoningEffort,
     },
     getApiKey: () => config.apiKey,
     toolExecution: normalized.parallelToolCalls ? "parallel" : "sequential",
     streamFn: (streamModel, context, streamOptions) => {
       // Agent widens Model<Api>; our initial state and registry guarantee openai-completions.
       const typedModel: Model<"openai-completions"> = streamModel as Model<"openai-completions">;
-      return streamOpenAICompletions(typedModel, context, {
+      const streamArgs = {
         ...streamOptions,
         temperature: normalized.temperature,
         maxTokens: normalized.maxOutputTokens,
         toolChoice: normalized.choice,
-      });
+      };
+      return streamSimpleOpenAICompletions(typedModel, context, streamArgs);
     },
     afterToolCall: async ({ assistantMessage }) => {
       const hasClientCall = assistantMessage.content.some(

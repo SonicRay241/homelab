@@ -54,6 +54,7 @@ function run(trace: "no" | "text" | "openwebui", output = "hello") {
     topP: 1,
     store: false,
     metadata: {},
+    reasoningEffort: "off",
     clientToolNames: new Set(),
     trace,
     sse: sse.writer,
