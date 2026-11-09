@@ -1,0 +1,30 @@
+services:
+  pi-assistant:
+    image: theta:5000/deployments/pi-assistant:latest
+    restart: unless-stopped
+    pull_policy: always
+    expose:
+      - "8787"
+    environment:
+      # Harness config
+      - BASE_API_URL=${BASE_API_URL}
+      - API_KEY=${API_KEY}
+      - PORT=8787
+      - BASEDIR=${BASEDIR}
+      # Token list is read from every secret in this Infisical folder; no API_KEYS env needed.
+      - INFISICAL_BASE_URL=${INFISICAL_BASE_URL}
+      - INFISICAL_CLIENT_ID=${INFISICAL_CLIENT_ID}
+      - INFISICAL_CLIENT_SECRET=${INFISICAL_CLIENT_SECRET}
+      - INFISICAL_ENV=${INFISICAL_ENV}
+      - INFISICAL_PROJECT_ID=${INFISICAL_PROJECT_ID}
+      - INFISICAL_SECRET_PATH=${INFISICAL_SECRET_PATH}
+      - TOKEN_REFRESH_MS=${TOKEN_REFRESH_MS:-60000}
+      # Optional: OTLP/HTTP collector base URL, e.g. http://otel-collector:4318
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-pi-assistant}
+
+      # Default agent config
+      - MODEL=deepseek-v4.1-flash:1017-cloud
+      - AGENT_ID=${DEFAULT_AGENT_NAME}
+      - CONTEXT_WINDOW=1000000
+      - REASONING_EFFORT=high
