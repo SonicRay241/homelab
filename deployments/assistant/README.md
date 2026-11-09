@@ -98,6 +98,40 @@ deniedUsers:
 - `config.yaml` is gitignored because it can contain an API key; commit
   `config.example.yaml` instead.
 
+## MCP tools
+
+Each agent can expose tools from one or more MCP servers in
+`BASEDIR/agent/<agent>/mcp.json` (or `.mcp.json`). The format is the standard
+`mcpServers` JSON shape used by OMP/Claude:
+
+```json
+{
+  "$schema": "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json",
+  "mcpServers": {
+    "example-local": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-example"],
+      "env": { "EXAMPLE_VAR": "value" },
+      "cwd": "/path/to/project"
+    }
+  }
+}
+```
+
+- Supported transports: `stdio`, `http` (Streamable HTTP), and `sse`.
+- Per-server options: `enabled`, `timeout` (ms; `0` disables), `env`, `cwd`, `headers`.
+- `cwd` is resolved relative to the agent directory when not absolute.
+- `${VAR}` in commands, args, env values, cwd, URLs, and headers is expanded from the assistant
+  process environment.
+- Root `disabledServers` always wins; `enabledServers` overrides a server's `enabled: false`.
+- MCP tools are exposed as `mcp__<server>_<tool>` (OpenAI-safe, capped at 64 chars). They are
+  server-side tools, so `x-pi-trace` covers them too.
+- Servers connect at startup. A failed connection is logged and skipped; the agent still starts.
+  An invalid config file disables MCP for that agent. Restart the assistant to reload `mcp.json`.
+- OAuth MCP auth is not implemented; use static `headers` or `env` for credentials.
+- `mcp.json`/`.mcp.json` are gitignored; commit `mcp.example.json` instead.
+
 ## Agent CLI
 
 `bun run cli.ts` (or `bun run cli`, `bun run agent`) manages agent directories under `BASEDIR`:
@@ -115,8 +149,9 @@ bun run cli validate
 bun run cli remove research --yes
 ```
 
-`new` creates `SOUL.md` and `config.example.yaml` (and `config.yaml` when flags are given). `show`
-masks `apiKey`. `allow`/`deny` edit the YAML access lists and keep them mutually exclusive.
+`new` creates `SOUL.md`, `config.example.yaml`, and `mcp.example.json` (and `config.yaml` when
+flags are given). `show` masks `apiKey`. `allow`/`deny` edit the YAML access lists and keep them
+mutually exclusive. `validate` checks both `config.yaml` and the active `mcp.json`.
 
 ## Agents and model selection
 
@@ -126,6 +161,8 @@ BASEDIR/agent/
     SOUL.md
     config.yaml            # optional, gitignored
     config.example.yaml
+    mcp.json               # optional, gitignored
+    mcp.example.json
   other/
     SOUL.md                # required marker
     config.yaml            # optional backend overrides
@@ -139,8 +176,8 @@ BASEDIR/agent/
 - Agent directories are discovered at startup; restart after adding, removing, or renaming one.
 - Each agent applies its own `config.yaml` overrides (backend URL/key/model, `maxInputTokens`,
   `compactionThreshold`, `compactionKeepTurns`, `allowedUsers`, `deniedUsers`), SOUL prompt,
-  sessions, workspace, and memory namespace. Infisical, port, `BASEDIR`, and refresh settings
-  remain process-wide.
+  sessions, workspace, memory namespace, and `mcp.json` servers. Infisical, port, `BASEDIR`, and
+  refresh settings remain process-wide.
 
 ## Environment
 
@@ -339,7 +376,8 @@ not passed in its environment.
   only if you trust the model with their side effects.
 - `bun test` covers memory semantics, Responses input conversion, the Infisical key registry,
   agent config overrides/access lists, agent discovery/resolution, server tool namespacing, token
-  estimation, SQLite session persistence/search, compaction, workspace tools, handoffs, server-tool
-  trace modes, and the agent CLI; `bun run typecheck` for types. Tests live in `test/`.
+  estimation, SQLite session persistence/search, compaction, workspace tools, handoffs, MCP
+  config/bridge/tool naming, server-tool trace modes, and the agent CLI; `bun run typecheck` for
+  types. Tests live in `test/`.
 - Client keys are hashed for lookup and never logged. Infisical failures keep the last known good
   key set; an empty initial load keeps the API at 503 instead of running open.

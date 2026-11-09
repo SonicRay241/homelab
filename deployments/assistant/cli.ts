@@ -1,9 +1,10 @@
 #!/usr/bin/env bun
-import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadAgentOverrides, writeAgentOverrides, type AgentOverrides } from "./src/agent-config.ts";
 import { resolveBasedir, resolveAgentsDir } from "./src/basedir.ts";
 import { isValidUserId } from "./src/config.ts";
+import { mcpConfigFile, parseMcpConfig } from "./src/mcp.ts";
 
 const CONFIG_EXAMPLE = `# Optional per-agent overrides. Everything unset comes from .env.
 # This file is gitignored because apiKey is usually a secret.
@@ -18,6 +19,12 @@ const CONFIG_EXAMPLE = `# Optional per-agent overrides. Everything unset comes f
 #   - alice
 # deniedUsers:
 #   - mallory
+`;
+
+const MCP_EXAMPLE = `{
+  "$schema": "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json",
+  "mcpServers": {}
+}
 `;
 
 const SET_KEYS = new Set([
@@ -150,6 +157,7 @@ function cmdNew(positionals: string[], flags: Map<string, string | true>): void 
       : `You are ${name}, an assistant running in the pi agent harness.\n\nBe direct and factual. Use tools when they help.\n`;
   writeFileSync(join(dir, "SOUL.md"), soul, "utf8");
   writeFileSync(join(dir, "config.example.yaml"), CONFIG_EXAMPLE, "utf8");
+  writeFileSync(join(dir, "mcp.example.json"), MCP_EXAMPLE, "utf8");
 
   const overrides: AgentOverrides = {};
   if (typeof flags.get("model") === "string") overrides.model = String(flags.get("model"));
@@ -233,6 +241,16 @@ function cmdValidate(): void {
     try {
       const dir = requireAgent(name);
       loadAgentOverrides(dir);
+      const mcpFile = mcpConfigFile(dir);
+      if (mcpFile) {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(readFileSync(mcpFile, "utf8"));
+        } catch (error) {
+          throw new Error(`${mcpFile}: invalid JSON: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        parseMcpConfig(parsed, mcpFile, dir);
+      }
       console.log(`${name}\tok`);
     } catch (error) {
       failed = true;

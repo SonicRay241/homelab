@@ -36,6 +36,8 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # runtime state under BASEDIR (legacy data kept ignored)
 data
 agent/*/config.yaml
+agent/*/mcp.json
+agent/*/.mcp.json
 agent/*/sessions.db*
 agent/*/user-*
 agent/*/users/

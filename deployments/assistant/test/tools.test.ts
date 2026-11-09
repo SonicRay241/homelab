@@ -23,6 +23,7 @@ describe("server tool namespacing", () => {
   it("reserves the prefix for server tools while leaving client names alone", () => {
     expect(isServerToolName("server_memory")).toBe(true);
     expect(isServerToolName("server_bash")).toBe(true);
+    expect(isServerToolName("mcp__example_echo")).toBe(true);
     expect(isServerToolName("memory")).toBe(false);
     expect(isServerToolName("bash")).toBe(false);
     expect(isServerToolName("my_server_tool")).toBe(false);
@@ -30,6 +31,7 @@ describe("server tool namespacing", () => {
 
   it("explains the convention in the system prompt block", () => {
     expect(SERVER_TOOL_INSTRUCTIONS).toContain("`server_`");
+    expect(SERVER_TOOL_INSTRUCTIONS).toContain("`mcp__`");
     expect(SERVER_TOOL_INSTRUCTIONS).toContain("Client-provided tools");
   });
 });

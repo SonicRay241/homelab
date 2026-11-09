@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadAgentOverrides } from "../src/agent-config.ts";
@@ -41,6 +41,7 @@ describe("agent CLI", () => {
     const created = await cli(["new", "research", "--model", "research:cloud", "--allow", "alice"], base);
     expect(created.code).toBe(0);
     expect(created.out).toContain("created research");
+    expect(await readFile(join(agentDir, "mcp.example.json"), "utf8")).toContain("mcpServers");
 
     expect((await cli(["set", "research", "maxInputTokens", "1234"], base)).code).toBe(0);
     expect((await cli(["set", "research", "compactionThreshold", "0.5"], base)).code).toBe(0);
@@ -66,6 +67,11 @@ describe("agent CLI", () => {
     const listed = await cli(["list"], base);
     expect(listed.out).toContain("research");
     expect((await cli(["validate"], base)).code).toBe(0);
+
+    await writeFile(join(agentDir, "mcp.json"), "{");
+    const badMcp = await cli(["validate"], base);
+    expect(badMcp.code).toBe(1);
+    expect(badMcp.err).toContain("invalid JSON");
 
     expect((await cli(["remove", "research"], base)).code).toBe(1);
     expect((await cli(["remove", "research", "--yes"], base)).code).toBe(0);

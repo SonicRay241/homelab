@@ -154,6 +154,8 @@ export interface RunOptions {
   sessionStore: SessionStore;
   handoffStore: HandoffStore;
   agentIds: string[];
+  /** MCP tools loaded for this agent at startup. */
+  mcpTools: AgentTool[];
   body: Record<string, unknown>;
   /** Presentation-only trace of server tool calls; never sent to the model. */
   trace: TraceMode;
@@ -476,7 +478,7 @@ export async function runResponse(options: RunOptions): Promise<Record<string, u
   const reservedClientTools = normalized.clientTools.filter((tool) => isServerToolName(tool.name));
   if (reservedClientTools.length) {
     throw new RequestError(
-      `Client tool names must not start with the reserved prefix: ${reservedClientTools.map((tool) => tool.name).join(", ")}`,
+      `Client tool names must not use a reserved server prefix: ${reservedClientTools.map((tool) => tool.name).join(", ")}`,
       400,
       "invalid_tool_name",
     );
@@ -501,6 +503,7 @@ export async function runResponse(options: RunOptions): Promise<Record<string, u
     namespaceServerTool(handoffInboxTool(handoffStore, userHash, config.agentId)),
     namespaceServerTool(handoffReadTool(handoffStore, userHash, config.agentId)),
     ...createWorkspaceTools(workspaceDirectory(config, userHash)).map((tool) => namespaceServerTool(tool)),
+    ...options.mcpTools,
   ];
   const clientToolNames = new Set(normalized.clientTools.map((tool) => tool.name));
   const tools: AgentTool[] = [...serverTools, ...normalized.clientTools.map(clientToolStub)];

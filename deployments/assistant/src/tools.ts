@@ -4,11 +4,12 @@ import { MemoryError, type MemoryStore, type MemoryTarget } from "./memory.ts";
 import type { HandoffStore } from "./handoffs.ts";
 import type { SessionStore } from "./sessions.ts";
 
-/** Client tool names are rejected if they use this prefix, so collisions cannot happen. */
+/** Client tool names are rejected if they use either reserved prefix, so collisions cannot happen. */
 export const SERVER_TOOL_PREFIX = "server_";
+export const MCP_TOOL_PREFIX = "mcp__";
 
 export function isServerToolName(name: string): boolean {
-  return name.startsWith(SERVER_TOOL_PREFIX);
+  return name.startsWith(SERVER_TOOL_PREFIX) || name.startsWith(MCP_TOOL_PREFIX);
 }
 
 /** Server tools are advertised to the model as `server_<name>`; client tools keep their names. */
@@ -19,7 +20,7 @@ export function namespaceServerTool<TParameters extends TSchema, TDetails>(
 }
 
 export const SERVER_TOOL_INSTRUCTIONS = `# Server tools
-Tool names starting with \`${SERVER_TOOL_PREFIX}\` are executed by this server. Client-provided tools keep their original names and are executed by the caller; the \`${SERVER_TOOL_PREFIX}\` prefix is reserved for server tools. \`server_session_search\` searches this user's persisted conversation history.`;
+Tool names starting with \`${SERVER_TOOL_PREFIX}\` or \`${MCP_TOOL_PREFIX}\` are executed by this server. Client-provided tools keep their original names and are executed by the caller; both prefixes are reserved. \`server_session_search\` searches this user's persisted conversation history. \`${MCP_TOOL_PREFIX}<server>_<tool>\` tools come from this agent's configured MCP servers.`;
 
 const OperationSchema = Type.Object({
   action: StringEnum(["add", "patch", "remove"] as const, {

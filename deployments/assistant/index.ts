@@ -7,11 +7,14 @@ import { HandoffStore, handoffFile, renderHandoffMarkdown, type HandoffStatus } 
 import { SseWriter } from "./src/openai.ts";
 import { RequestError, runResponse } from "./src/runner.ts";
 import { SessionStore, sessionFile } from "./src/sessions.ts";
+import { loadAgentMcp, type McpAgentConnection } from "./src/mcp.ts";
 import { parseTraceMode, type TraceMode } from "./src/trace.ts";
 
 const baseConfig = loadConfig();
 const agents = discoverAgents(baseConfig);
 const agentIds = agents.map((agent) => agent.id);
+const mcpConnections = new Map<string, McpAgentConnection>();
+for (const agent of agents) mcpConnections.set(agent.id, await loadAgentMcp(agent.dir));
 const sessionStores = new Map(agents.map((agent) => [agent.id, new SessionStore(sessionFile(agent.config))]));
 const handoffStore = new HandoffStore(handoffFile(baseConfig));
 const registry = new UserRegistry(createInfisicalClient(baseConfig.infisical), baseConfig.refreshMs, baseConfig.staticKeys);
@@ -70,6 +73,7 @@ function streamResponse(
   requestedModel: string,
   userId: string,
   userHash: string,
+  mcpTools: McpAgentConnection["tools"],
   trace: TraceMode,
   body: Record<string, unknown>,
   signal: AbortSignal,
@@ -87,6 +91,7 @@ function streamResponse(
           sessionStore,
           handoffStore,
           agentIds: allowedAgentIds,
+          mcpTools,
           body,
           trace,
           sse: writer,
@@ -237,6 +242,7 @@ const server = Bun.serve({
           requestedModel,
           userId,
           userHash,
+          mcpConnections.get(agent.id)?.tools ?? [],
           trace,
           parsed,
           request.signal,
@@ -253,6 +259,7 @@ const server = Bun.serve({
             sessionStore,
             handoffStore,
             agentIds: allowedAgentIds,
+            mcpTools: mcpConnections.get(agent.id)?.tools ?? [],
             body: parsed,
             trace,
             signal: request.signal,
@@ -271,11 +278,12 @@ const server = Bun.serve({
 
 console.log(
   `pi-assistant listening on http://${server.hostname}:${server.port} agents=${agents.map((agent) => agent.id).join(",")} ` +
+    `mcpTools=${[...mcpConnections.values()].reduce((sum, mcp) => sum + mcp.tools.length, 0)} ` +
     `auth=${registry.ready ? "ready" : "pending"} users=${registry.size} refresh=${baseConfig.refreshMs}ms`,
 );
 
 let stopping = false;
-function shutdown(signal: string): void {
+async function shutdown(signal: string): Promise<void> {
   if (stopping) return;
   stopping = true;
   console.log(`pi-assistant ${signal} received, shutting down`);
@@ -283,8 +291,9 @@ function shutdown(signal: string): void {
   for (const store of sessionStores.values()) store.close();
   handoffStore.close();
   server.stop();
+  await Promise.allSettled([...mcpConnections.values()].map((mcp) => mcp.close()));
   process.exit(0);
 }
 
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => void shutdown("SIGTERM"));
+process.on("SIGINT", () => void shutdown("SIGINT"));
