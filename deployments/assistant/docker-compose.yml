@@ -36,7 +36,3 @@ services:
 
 volumes:
   pi_assistant_data:
-networks:
-  default:
-  dokploy-network:
-    external: true
