@@ -58,6 +58,22 @@ cp agent/default/config.example.yaml agent/default/config.yaml   # optional over
 bun run start
 ```
 
+### Docker
+
+The image uses `oven/bun:1-alpine`, installs production dependencies, and runs as the `bun` user
+with `BASEDIR=/data`.
+
+```bash
+docker build -t pi-assistant .
+docker run --rm -p 8787:8787 --env-file .env -v pi-assistant-data:/data pi-assistant
+```
+
+- Mount a named volume at `/data` (or a host directory the `bun` user can write).
+- Create an agent if the volume is empty, for example:
+  `docker exec -it <container> bun run cli.ts new default`
+- The base image does not include Node/npm. MCP configs that use `npx` need `bunx` instead, or an
+  image extended with Node.
+
 In Infisical, create one secret per user in `INFISICAL_SECRET_PATH` (folder, e.g. `users`):
 secret name `alice`, value `sk-...`; secret name `bob`, value `sk-...`.
 

@@ -1,0 +1,17 @@
+node_modules
+.env
+.env.*
+!.env.example
+data
+agent
+handoffs.db*
+test
+*.log
+.git
+.gitignore
+Dockerfile
+.dockerignore
+README.md
+dump.csv
+proxy-costs.db
+shared
