@@ -3,13 +3,16 @@ import { createInfisicalClient } from "./src/auth/infisical.ts";
 import { keyHash, requestToken, UserRegistry } from "./src/auth/users.ts";
 import { loadConfig } from "./src/config.ts";
 import { isRecord } from "./src/guards.ts";
+import { HandoffStore, handoffFile, renderHandoffMarkdown, type HandoffStatus } from "./src/handoffs.ts";
 import { SseWriter } from "./src/openai.ts";
 import { RequestError, runResponse } from "./src/runner.ts";
 import { SessionStore, sessionFile } from "./src/sessions.ts";
 
 const baseConfig = loadConfig();
 const agents = discoverAgents(baseConfig);
+const agentIds = agents.map((agent) => agent.id);
 const sessionStores = new Map(agents.map((agent) => [agent.id, new SessionStore(sessionFile(agent.config))]));
+const handoffStore = new HandoffStore(handoffFile(baseConfig));
 const registry = new UserRegistry(createInfisicalClient(baseConfig.infisical), baseConfig.refreshMs, baseConfig.staticKeys);
 
 await registry.start();
@@ -37,6 +40,27 @@ function modelList(): Response {
   });
 }
 
+const HANDOFF_STATUSES = ["pending", "read", "consumed", "all"] as const;
+
+function isHandoffStatus(value: string): value is HandoffStatus | "all" {
+  return (HANDOFF_STATUSES as readonly string[]).includes(value);
+}
+
+function agentFromQuery(url: URL): AgentDefinition | undefined {
+  const target = url.searchParams.get("target") ?? "";
+  return agents.find((agent) => agent.id === target);
+}
+
+function requireAgentFromQuery(url: URL): AgentDefinition | Response {
+  const agent = agentFromQuery(url);
+  if (agent) return agent;
+  return apiError(
+    `target query parameter must be one of: ${agentIds.join(", ")}`,
+    400,
+    "invalid_agent",
+  );
+}
+
 function streamResponse(
   agent: AgentDefinition,
   sessionStore: SessionStore,
@@ -57,6 +81,8 @@ function streamResponse(
           userId,
           userHash,
           sessionStore,
+          handoffStore,
+          agentIds,
           body,
           sse: writer,
           signal,
@@ -101,7 +127,7 @@ const server = Bun.serve({
     if (path === "/health") {
       return json({ ok: true, authReady: registry.ready, users: registry.size, agents: agents.map((agent) => agent.id) });
     }
-    if (path === "/") return json({ name: "pi-assistant", endpoints: ["/v1/responses", "/v1/models"] });
+    if (path === "/") return json({ name: "pi-assistant", endpoints: ["/v1/responses", "/v1/models", "/v1/handoffs"] });
 
     if (!registry.ready) return apiError("Service Unavailable: authentication backend not ready", 503, "service_unavailable");
     const token = requestToken(request);
@@ -116,6 +142,43 @@ const server = Bun.serve({
         return json({ id, object: "model", created: Math.floor(Date.now() / 1_000), owned_by: "pi-assistant" });
       }
       return apiError(`Unknown model ${id}`, 404, "model_not_found");
+    }
+
+    if (request.method === "GET" && (path === "/v1/handoffs" || path === "/handoffs")) {
+      const target = requireAgentFromQuery(url);
+      if (target instanceof Response) return target;
+      const statusParam = url.searchParams.get("status") ?? "pending";
+      if (!isHandoffStatus(statusParam)) {
+        return apiError(`status must be one of: ${HANDOFF_STATUSES.join(", ")}`, 400, "invalid_status");
+      }
+      const rawLimit = Number(url.searchParams.get("limit") ?? 20);
+      const limit = Number.isFinite(rawLimit) ? rawLimit : 20;
+      return json({ object: "list", data: handoffStore.list(userHash, target.id, statusParam, limit) });
+    }
+
+    const consumeHandoff = path.match(/^\/(?:v1\/)?handoffs\/([^/]+)\/consume$/)?.[1];
+    if (request.method === "POST" && consumeHandoff) {
+      const target = requireAgentFromQuery(url);
+      if (target instanceof Response) return target;
+      const id = decodeURIComponent(consumeHandoff);
+      if (!handoffStore.consume(id, userHash, target.id)) {
+        return apiError("Handoff not found", 404, "not_found");
+      }
+      return json({ success: true, id, status: "consumed" });
+    }
+
+    const handoffId = path.match(/^\/(?:v1\/)?handoffs\/([^/]+)$/)?.[1];
+    if (request.method === "GET" && handoffId) {
+      const target = requireAgentFromQuery(url);
+      if (target instanceof Response) return target;
+      const record = handoffStore.get(decodeURIComponent(handoffId), userHash, target.id);
+      if (!record) return apiError("Handoff not found", 404, "not_found");
+      if (url.searchParams.get("format") === "markdown") {
+        return new Response(renderHandoffMarkdown(record), {
+          headers: { ...CORS, "content-type": "text/markdown; charset=utf-8" },
+        });
+      }
+      return json(record);
     }
 
     const responseId = path.match(/^\/(?:v1\/)?responses\/([^/]+)$/)?.[1];
@@ -162,6 +225,8 @@ const server = Bun.serve({
             userId,
             userHash,
             sessionStore,
+            handoffStore,
+            agentIds,
             body: parsed,
             signal: request.signal,
           }),
@@ -189,6 +254,7 @@ function shutdown(signal: string): void {
   console.log(`pi-assistant ${signal} received, shutting down`);
   registry.stop();
   for (const store of sessionStores.values()) store.close();
+  handoffStore.close();
   server.stop();
   process.exit(0);
 }

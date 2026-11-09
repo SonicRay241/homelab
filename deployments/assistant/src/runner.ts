@@ -14,8 +14,19 @@ import type { AssistantConfig } from "./config.ts";
 import { compactMessages, compactionTokenThreshold, createLlmSummarizer } from "./compaction.ts";
 import { isRecord } from "./guards.ts";
 import { MemoryStore, MEMORY_INSTRUCTIONS } from "./memory.ts";
+import type { HandoffStore } from "./handoffs.ts";
 import { type SessionStore, messagesToSearchText } from "./sessions.ts";
-import { isServerToolName, memoryTool, namespaceServerTool, SERVER_TOOL_INSTRUCTIONS, sessionSearchTool } from "./tools.ts";
+import {
+  handoffInboxTool,
+  handoffInstructions,
+  handoffReadTool,
+  handoffSendTool,
+  isServerToolName,
+  memoryTool,
+  namespaceServerTool,
+  SERVER_TOOL_INSTRUCTIONS,
+  sessionSearchTool,
+} from "./tools.ts";
 import { createWorkspaceTools, WORKSPACE_INSTRUCTIONS, workspaceDirectory } from "./workspace.ts";
 import {
   collectToolNames,
@@ -62,13 +73,22 @@ async function loadSoul(config: AssistantConfig): Promise<string> {
   }
 }
 
-async function buildBaseSystemPrompt(config: AssistantConfig, userId: string): Promise<string> {
+async function buildBaseSystemPrompt(
+  config: AssistantConfig,
+  userId: string,
+  userHash: string,
+  handoffStore: HandoffStore,
+  agentIds: string[],
+): Promise<string> {
   const store = new MemoryStore(memoryDirectory(config, userId));
   const snapshot = await store.snapshot();
+  const targets = agentIds.filter((id) => id !== config.agentId);
+  const pending = handoffStore.countPending(userHash, config.agentId);
   return [
     await loadSoul(config),
     SERVER_TOOL_INSTRUCTIONS,
     WORKSPACE_INSTRUCTIONS,
+    handoffInstructions(config.agentId, targets, pending),
     store.render("memory", snapshot.memory),
     store.render("user", snapshot.user),
     MEMORY_INSTRUCTIONS,
@@ -131,6 +151,8 @@ export interface RunOptions {
   /** Short API-key hash used to isolate sessions and workspaces. */
   userHash: string;
   sessionStore: SessionStore;
+  handoffStore: HandoffStore;
+  agentIds: string[];
   body: Record<string, unknown>;
   sse?: SseWriter;
   signal?: AbortSignal;
@@ -371,7 +393,7 @@ class ResponseEmitter {
  * are returned as function_call output items for the caller to execute.
  */
 export async function runResponse(options: RunOptions): Promise<Record<string, unknown>> {
-  const { config, model, requestedModel, userId, userHash, sessionStore, body } = options;
+  const { config, model, requestedModel, userId, userHash, sessionStore, handoffStore, agentIds, body } = options;
   const normalized = normalize(config, body, requestedModel);
 
   const previous = normalized.previousResponseId
@@ -388,7 +410,8 @@ export async function runResponse(options: RunOptions): Promise<Record<string, u
     throw new RequestError("input is required");
   }
 
-  const baseSystemPrompt = previous?.systemPrompt ?? (await buildBaseSystemPrompt(config, userId));
+  const baseSystemPrompt =
+    previous?.systemPrompt ?? (await buildBaseSystemPrompt(config, userId, userHash, handoffStore, agentIds));
   const instructions = [normalized.rawInstructions, ...converted.instructions].filter(Boolean).join("\n\n");
   const systemPrompt = instructions
     ? `${baseSystemPrompt}\n\n# Client instructions\n${instructions}`
@@ -403,15 +426,29 @@ export async function runResponse(options: RunOptions): Promise<Record<string, u
     );
   }
 
+  const contextMessages = [...history, ...converted.messages];
+  const validTargets = agentIds.filter((id) => id !== config.agentId);
+  const handoffTranscript = messagesToSearchText(contextMessages.slice(-20)).slice(-20_000);
   const serverTools: AgentTool[] = [
     namespaceServerTool(memoryTool(new MemoryStore(memoryDirectory(config, userId)))),
     namespaceServerTool(sessionSearchTool(sessionStore, userHash)),
+    namespaceServerTool(
+      handoffSendTool({
+        store: handoffStore,
+        userHash,
+        sourceAgent: config.agentId,
+        validTargets,
+        sourceResponseId: normalized.previousResponseId ?? null,
+        transcript: handoffTranscript,
+      }),
+    ),
+    namespaceServerTool(handoffInboxTool(handoffStore, userHash, config.agentId)),
+    namespaceServerTool(handoffReadTool(handoffStore, userHash, config.agentId)),
     ...createWorkspaceTools(workspaceDirectory(config, userHash)).map((tool) => namespaceServerTool(tool)),
   ];
   const clientToolNames = new Set(normalized.clientTools.map((tool) => tool.name));
   const tools: AgentTool[] = [...serverTools, ...normalized.clientTools.map(clientToolStub)];
 
-  const contextMessages = [...history, ...converted.messages];
   const compaction = await compactMessages({
     systemPrompt,
     messages: contextMessages,

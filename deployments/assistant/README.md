@@ -41,6 +41,9 @@ client ──Bearer sk-...──> assistant :8787
 - Multi-agent: every `agents/<id>/` directory with a `SOUL.md` is selectable. `/v1/models` lists
   those ids, and the request `model` field selects one. `.env` remains the required default backend;
   `agents/<id>/config.yaml` can override the backend URL, key, or model per agent.
+- Agent handoffs: `server_handoff_send` passes research/context to another agent; the recipient uses
+  `server_handoff_inbox` / `server_handoff_read`. Handoffs live in `data/handoffs.db` (table
+  `handoff`), scoped by API-key hash and target agent, and are also available over HTTP.
 - SOUL prompt and memory are scoped per agent (`data/users/<user>/agents/<agent>/memories/`).
 
 ## Setup
@@ -160,6 +163,7 @@ curl http://localhost:8787/v1/responses \
 ```
 
 Also implemented: `GET /v1/responses/:id` (if `store` was not `false`), `GET /v1/models/:id`,
+`GET /v1/handoffs`, `GET /v1/handoffs/:id`, `POST /v1/handoffs/:id/consume`,
 `GET /health` (`{ok,authReady,users,agents}`), CORS preflight. Errors use the OpenAI
 `{error:{message,type,param,code}}` shape.
 Streaming emits the Responses SSE sequence (`response.created`, `response.in_progress`,
@@ -192,6 +196,41 @@ One SQLite database per agent: `data/agents/<agent>/sessions.db` (WAL mode), tab
 - `server_session_search` searches only the current user's rows in the current agent database and
   returns `response_id`, timestamp, and a snippet. Pass `response_id` to restrict the search to one
   stored response.
+
+## Agent handoffs
+
+Sessions are per agent, so cross-agent context uses a central `data/handoffs.db` with table
+`handoff`. Rows hold source/target agent, a title, summary, free-form context, an optional recent
+transcript, `source_response_id`, and `pending` / `read` / `consumed` status. They are scoped by the
+short API-key hash and target agent.
+
+Server tools:
+
+| Tool | Behavior |
+| --- | --- |
+| `server_handoff_send` | Send context to another agent (validated target; not itself). Includes the last 20 source messages unless `include_transcript: false`. |
+| `server_handoff_inbox` | List handoffs for the current agent (`pending` by default; `read`, `consumed`, `all`). |
+| `server_handoff_read` | Load one handoff, mark it read, and consume it by default (`consume: false` to keep it). |
+
+The target agent's system prompt shows the pending count at conversation start; the inbox tool is
+live, so new handoffs remain visible without restarting. Handoffs are scoped to the same API key
+hash: use the same key for the source agent and the recipient.
+
+HTTP for external harnesses (OpenCode, omp, scripts):
+
+```bash
+# inbox for an agent
+curl "http://localhost:8787/v1/handoffs?target=coding&status=pending" \
+  -H "Authorization: Bearer $KEY"
+
+# full handoff (optionally as markdown for a prompt/context file)
+curl "http://localhost:8787/v1/handoffs/$ID?target=coding&format=markdown" \
+  -H "Authorization: Bearer $KEY"
+
+# mark consumed after ingesting
+curl -X POST "http://localhost:8787/v1/handoffs/$ID/consume?target=coding" \
+  -H "Authorization: Bearer $KEY"
+```
 
 ## Compaction
 
@@ -245,7 +284,7 @@ not passed in its environment.
   only if you trust the model with their side effects.
 - `bun test` covers memory semantics, Responses input conversion, the Infisical key registry,
   agent config overrides, agent discovery/resolution, server tool namespacing, token estimation,
-  SQLite session persistence/search, compaction, and workspace tools; `bun run typecheck` for
-  types. Tests live in `test/`.
+  SQLite session persistence/search, compaction, workspace tools, and handoffs;
+  `bun run typecheck` for types. Tests live in `test/`.
 - Client keys are hashed for lookup and never logged. Infisical failures keep the last known good
   key set; an empty initial load keeps the API at 503 instead of running open.
