@@ -43,7 +43,7 @@ import {
   type ClientTool,
   type OutputItem,
   type RunUsage,
-  type SseWriter,
+  type SseSink,
 } from "./openai.ts";
 import { formatTrace, type TraceMode } from "./trace.ts";
 import type { RequestTelemetry } from "./telemetry.ts";
@@ -176,10 +176,12 @@ export interface RunOptions {
   /** MCP tools loaded for this agent at startup. */
   mcpTools: AgentTool[];
   body: Record<string, unknown>;
+  /** Chat clients replay the transcript; store only the new suffix against a stored prefix. */
+  replay?: boolean;
   /** Presentation-only trace of server tool calls; never sent to the model. */
   trace: TraceMode;
   telemetry?: RequestTelemetry;
-  sse?: SseWriter;
+  sse?: SseSink;
   signal?: AbortSignal;
 }
 
@@ -276,11 +278,11 @@ export class ResponseEmitter {
       reasoningEffort: ReasoningEffort;
       clientToolNames: Set<string>;
       trace: TraceMode;
-      sse?: SseWriter;
+      sse?: SseSink;
     },
   ) {}
 
-  private get sse(): SseWriter | undefined {
+  private get sse(): SseSink | undefined {
     return this.options.sse;
   }
 
@@ -567,8 +569,10 @@ export async function runResponse(options: RunOptions): Promise<Record<string, u
         `after=${compaction.afterTokens} dropped=${compaction.droppedMessages}`,
     );
   }
-  const initialMessages = compaction.compacted ? compaction.messages : history;
-  const promptMessages = compaction.compacted ? [] : converted.messages;
+  // The whole transcript is initial state; `prompt([])` runs the model without
+  // replaying those messages as events. Passing them to `prompt()` made pi emit
+  // `message_end` for replayed assistant turns, re-sending old tool calls.
+  const initialMessages = compaction.compacted ? compaction.messages : contextMessages;
 
   if (config.maxInputTokens > 0 && compaction.afterTokens > config.maxInputTokens) {
     throw new RequestError(
@@ -632,7 +636,7 @@ export async function runResponse(options: RunOptions): Promise<Record<string, u
   options.signal?.addEventListener("abort", abort, { once: true });
   agent.subscribe((event) => emitter.onEvent(event));
   try {
-    await agent.prompt(promptMessages);
+    await agent.prompt([]);
   } finally {
     options.signal?.removeEventListener("abort", abort);
   }
@@ -663,7 +667,7 @@ export async function runResponse(options: RunOptions): Promise<Record<string, u
         systemPrompt: baseSystemPrompt,
         messages: storedMessages,
         response,
-        searchText: messagesToSearchText(storedMessages),
+        replay: options.replay === true,
       });
     } catch (error) {
       console.error(`[sessions] failed to save ${id} for agent ${config.agentId}: ${String(error)}`);

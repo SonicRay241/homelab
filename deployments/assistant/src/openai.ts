@@ -363,7 +363,166 @@ export function responseShape(options: ResponseShapeOptions): Record<string, unk
   };
 }
 
-export class SseWriter {
+/** Minimal sink so the runner can emit its Responses events into either SSE format. */
+export interface SseSink {
+  send(type: string, payload: Record<string, unknown>): void;
+  close(): void;
+}
+
+function objectField(value: unknown): Record<string, unknown> {
+  return isRecord(value) ? value : {};
+}
+
+function numericField(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+/** Chat parts (`text`, `image_url`) become Responses parts (`input_text`, `input_image`). */
+function chatContent(content: unknown): unknown {
+  if (content === null) return undefined;
+  if (!Array.isArray(content)) return typeof content === "string" && !content ? undefined : content;
+  const parts: unknown[] = [];
+  for (const raw of content) {
+    if (!isRecord(raw)) continue;
+    const type = stringField(raw.type);
+    if (type === "text" || type === "input_text") {
+      const text = stringField(raw.text);
+      if (text) parts.push({ type: "input_text", text });
+    } else if (type === "image_url") {
+      const imageUrl = isRecord(raw.image_url) ? stringField(raw.image_url.url) : stringField(raw.image_url);
+      if (imageUrl) parts.push({ type: "input_image", image_url: imageUrl });
+    } else if (type === "input_image") {
+      parts.push(raw);
+    }
+  }
+  return parts.length ? parts : undefined;
+}
+
+/**
+ * Rewrites a Chat Completions request into the Responses-shaped body `runResponse`
+ * consumes. Unsupported chat fields (`n`, `response_format`, `stop`, `logprobs`)
+ * are ignored here; `n` is rejected by the HTTP handler.
+ */
+export function chatRequestToResponses(body: Record<string, unknown>): Record<string, unknown> {
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+  const input: unknown[] = [];
+
+  for (const raw of messages.slice(0, MAX_INPUT_ITEMS)) {
+    if (!isRecord(raw)) continue;
+    const role = stringField(raw.role);
+    if (!role) continue;
+
+    if (role === "system" || role === "developer" || role === "user") {
+      const content = chatContent(raw.content);
+      if (content !== undefined) input.push({ role, content });
+      continue;
+    }
+
+    if (role === "assistant") {
+      const content = chatContent(raw.content);
+      if (content !== undefined) input.push({ role: "assistant", content });
+      for (const call of Array.isArray(raw.tool_calls) ? raw.tool_calls : []) {
+        if (!isRecord(call)) continue;
+        const fn = objectField(call.function);
+        const callId = stringField(call.id);
+        const name = stringField(fn.name);
+        if (!callId || !name) continue;
+        input.push({
+          type: "function_call",
+          call_id: callId,
+          name,
+          arguments: typeof fn.arguments === "string" ? fn.arguments : JSON.stringify(fn.arguments ?? {}),
+        });
+      }
+      continue;
+    }
+
+    if (role === "tool") {
+      const callId = stringField(raw.tool_call_id);
+      if (callId) input.push({ type: "function_call_output", call_id: callId, output: raw.content ?? "" });
+    }
+  }
+
+  const maxTokens = body.max_completion_tokens ?? body.max_tokens;
+  return {
+    ...body,
+    // Chat clients replay the whole conversation; never merge stored history on top.
+    previous_response_id: undefined,
+    input,
+    ...(typeof maxTokens === "number" ? { max_output_tokens: maxTokens } : {}),
+  };
+}
+
+function chatCompletionId(id: string): string {
+  return id.startsWith("resp_") ? `chatcmpl-${id.slice("resp_".length)}` : id;
+}
+
+function chatUsage(value: unknown): Record<string, unknown> {
+  const usage = objectField(value);
+  return {
+    prompt_tokens: numericField(usage.input_tokens),
+    completion_tokens: numericField(usage.output_tokens),
+    total_tokens: numericField(usage.total_tokens),
+    prompt_tokens_details: { cached_tokens: numericField(objectField(usage.input_tokens_details).cached_tokens) },
+    completion_tokens_details: {
+      reasoning_tokens: numericField(objectField(usage.output_tokens_details).reasoning_tokens),
+    },
+  };
+}
+
+function chatText(output: unknown[]): string {
+  return output
+    .flatMap((item) => {
+      if (!isRecord(item) || item.type !== "message" || !Array.isArray(item.content)) return [];
+      return item.content.flatMap((part) => (isRecord(part) && typeof part.text === "string" ? [part.text] : []));
+    })
+    .join("");
+}
+
+function chatToolCalls(output: unknown[]): Record<string, unknown>[] {
+  return output.flatMap((item) => {
+    if (!isRecord(item) || item.type !== "function_call") return [];
+    return [
+      {
+        id: stringField(item.call_id) ?? stringField(item.id) ?? "",
+        type: "function",
+        function: { name: stringField(item.name) ?? "", arguments: stringField(item.arguments) ?? "{}" },
+      },
+    ];
+  });
+}
+
+/** Projects a completed Responses object into the Chat Completions response shape. */
+export function chatCompletionShape(
+  response: Record<string, unknown>,
+  fallbackModel: string,
+): Record<string, unknown> {
+  const output = Array.isArray(response.output) ? response.output : [];
+  const text = chatText(output);
+  const toolCalls = chatToolCalls(output);
+  const status = stringField(response.status) ?? "completed";
+  return {
+    id: chatCompletionId(stringField(response.id) ?? ""),
+    object: "chat.completion",
+    created: typeof response.created_at === "number" ? response.created_at : Math.floor(Date.now() / 1_000),
+    model: stringField(response.model) ?? fallbackModel,
+    choices: [
+      {
+        index: 0,
+        message: {
+          role: "assistant",
+          content: text ? text : toolCalls.length ? null : "",
+          ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
+        },
+        finish_reason: toolCalls.length ? "tool_calls" : status === "incomplete" ? "length" : "stop",
+        logprobs: null,
+      },
+    ],
+    usage: chatUsage(response.usage),
+  };
+}
+
+export class SseWriter implements SseSink {
   private sequence = 0;
   private closed = false;
   private readonly encoder = new TextEncoder();
@@ -377,6 +536,145 @@ export class SseWriter {
       this.controller.enqueue(this.encoder.encode(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`));
     } catch {
       this.closed = true;
+    }
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    try {
+      this.controller.close();
+    } catch {
+      // client disconnected
+    }
+  }
+}
+
+/**
+ * Translates the runner's Responses events into Chat Completions chunks.
+ * Only client function calls are emitted as `tool_calls` deltas; server tool
+ * calls execute inside the agent loop and surface only through the trace text
+ * when `x-pi-trace` is set, exactly like the Responses endpoint.
+ */
+export class ChatCompletionStream implements SseSink {
+  private readonly encoder = new TextEncoder();
+  private readonly created = Math.floor(Date.now() / 1_000);
+  private readonly toolIndexes = new Map<number, number>();
+  private chatId = "chatcmpl-pending";
+  private model = "";
+  private toolCalls = false;
+  private finished = false;
+  private closed = false;
+
+  constructor(
+    private readonly controller: ReadableStreamDefaultController<Uint8Array>,
+    private readonly includeUsage = false,
+  ) {}
+
+  private write(data: unknown): void {
+    if (this.closed) return;
+    const text = typeof data === "string" ? data : JSON.stringify(data);
+    try {
+      this.controller.enqueue(this.encoder.encode(`data: ${text}\n\n`));
+    } catch {
+      this.closed = true;
+    }
+  }
+
+  private chunk(choices: unknown[], extra?: Record<string, unknown>): void {
+    this.write({
+      id: this.chatId,
+      object: "chat.completion.chunk",
+      created: this.created,
+      model: this.model,
+      choices,
+      ...extra,
+    });
+  }
+
+  private delta(delta: Record<string, unknown>): void {
+    this.chunk([{ index: 0, delta, finish_reason: null, logprobs: null }]);
+  }
+
+  private finish(response: Record<string, unknown>, reason: string): void {
+    if (this.finished) return;
+    this.finished = true;
+    this.chunk([{ index: 0, delta: {}, finish_reason: reason, logprobs: null }]);
+    if (this.includeUsage) this.chunk([], { usage: chatUsage(response.usage) });
+    this.write("[DONE]");
+  }
+
+  fail(code: string, message: string): void {
+    if (this.finished) return;
+    this.finished = true;
+    this.write({ error: { message, type: "server_error", param: null, code } });
+    this.write("[DONE]");
+  }
+
+  send(type: string, payload: Record<string, unknown>): void {
+    if (this.finished) return;
+    switch (type) {
+      case "response.created": {
+        const response = objectField(payload.response);
+        this.chatId = chatCompletionId(stringField(response.id) ?? "");
+        this.model = stringField(response.model) ?? "";
+        this.delta({ role: "assistant", content: "" });
+        return;
+      }
+      case "response.output_text.delta": {
+        const text = stringField(payload.delta);
+        if (text) this.delta({ content: text });
+        return;
+      }
+      case "response.output_item.added": {
+        const item = objectField(payload.item);
+        if (item.type !== "function_call") return;
+        const outputIndex = typeof payload.output_index === "number" ? payload.output_index : this.toolIndexes.size;
+        const index = this.toolIndexes.size;
+        this.toolIndexes.set(outputIndex, index);
+        this.toolCalls = true;
+        this.delta({
+          tool_calls: [
+            {
+              index,
+              id: stringField(item.call_id) ?? stringField(item.id) ?? "",
+              type: "function",
+              function: { name: stringField(item.name) ?? "", arguments: "" },
+            },
+          ],
+        });
+        return;
+      }
+      case "response.function_call_arguments.delta": {
+        const index =
+          typeof payload.output_index === "number" ? this.toolIndexes.get(payload.output_index) : undefined;
+        if (index === undefined) return;
+        this.delta({ tool_calls: [{ index, function: { arguments: stringField(payload.delta) ?? "" } }] });
+        return;
+      }
+      case "response.completed":
+      case "response.incomplete": {
+        const reason = type === "response.incomplete" ? "length" : this.toolCalls ? "tool_calls" : "stop";
+        this.finish(objectField(payload.response), reason);
+        return;
+      }
+      case "response.failed": {
+        const error = objectField(objectField(payload.response).error);
+        this.fail(
+          stringField(error.code) ?? "server_error",
+          stringField(error.message) ?? "The model request failed.",
+        );
+        return;
+      }
+      case "error": {
+        this.fail(
+          stringField(payload.code) ?? "server_error",
+          stringField(payload.message) ?? "Internal Server Error",
+        );
+        return;
+      }
+      default:
+        return;
     }
   }
 

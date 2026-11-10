@@ -16,6 +16,8 @@ client ──Bearer sk-...──> assistant :8787
 ## What it does
 
 - `POST /v1/responses` with `stream: true|false`.
+- `POST /v1/chat/completions` with `stream: true|false` for Chat Completions clients; messages are
+  replayed in full on every request, exactly like the OpenAI API (no stored history is merged).
 - **Server-side tools**: the pi agent executes tools inline and keeps looping until it answers.
   Server tools are exposed to the model as `server_<name>` (for example `server_memory`); the
   convention is also stated in the system prompt.
@@ -272,6 +274,30 @@ curl http://localhost:8787/v1/responses \
   -d '{"model":"default","previous_response_id":"resp_...","input":[{"type":"function_call_output","call_id":"call_...","output":"Sunny, 22C"}]}'
 ```
 
+### Chat Completions
+
+`POST /v1/chat/completions` (and `/chat/completions`) accepts the standard chat shape and returns
+`chat.completion` or, with `stream: true`, `chat.completion.chunk` events terminated by
+`data: [DONE]`.
+
+```bash
+curl http://localhost:8787/v1/chat/completions \
+  -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -d '{"model":"default","messages":[{"role":"user","content":"Say ok."}],"stream":true}'
+```
+
+- Supported: `messages` (text, `image_url` data URLs, assistant `tool_calls`, `tool` results),
+  `tools`/`tool_choice`/`parallel_tool_calls`, `temperature`, `top_p`,
+  `max_tokens`/`max_completion_tokens`, `reasoning_effort`, `store`, and
+  `stream_options.include_usage`. `n` must be `1`.
+- The conversation is **stateless**: the client replays the full message list each turn and the
+  server never merges stored history, so prompts are not duplicated. `store` still controls whether
+  the turn is written to the session database for `server_session_search` and handoffs.
+- Streaming emits one role chunk, text deltas as `delta.content`, client function calls as
+  `delta.tool_calls`, then a finish chunk (`stop`, `tool_calls`, or `length`), an optional usage
+  chunk, and `[DONE]`. Server tool calls never appear as `tool_calls`; with `x-pi-trace` they are
+  appended to `delta.content` as trace text.
+
 Also implemented: `GET /v1/responses/:id` (if `store` was not `false`), `GET /v1/models/:id`,
 `GET /v1/handoffs`, `GET /v1/handoffs/:id`, `POST /v1/handoffs/:id/consume`,
 `GET /health` (`{ok,authReady,users,agents}`), CORS preflight. Errors use the OpenAI
@@ -283,8 +309,8 @@ Streaming emits the Responses SSE sequence (`response.created`, `response.in_pro
 ### Server-tool traces
 
 Server tools (`server_*`) execute inside the agent loop, so their calls are not part of the
-standard Responses output. Set `x-pi-trace` on `POST /v1/responses` to include a presentation-only
-trace in the assistant text (both streaming and non-streaming):
+standard Responses output. Set `x-pi-trace` on `POST /v1/responses` or `POST /v1/chat/completions`
+to include a presentation-only trace in the assistant text (both streaming and non-streaming):
 
 | Header value | Behavior |
 | --- | --- |
@@ -332,19 +358,28 @@ life of a conversation; tool results always show live entries and usage.
 
 ## Sessions
 
-One SQLite database per agent: `BASEDIR/agent/<agent>/sessions.db` (WAL mode), table `session`.
+One SQLite database per agent: `BASEDIR/agent/<agent>/sessions.db` (WAL mode), tables `session` and
+`chat_log`.
 
-- Each row stores `response_id`, `previous_response_id`, `user_hash`, `agent_id`, timestamp, the
-  frozen base system prompt, the pi transcript (`messages` JSON), and the Responses payload.
+- `session` has one row per API turn: `response_id`, `conversation_id`, `previous_response_id`,
+  `user_hash`, `agent_id`, timestamp, the frozen base system prompt, the Responses payload, and a
+  `checkpoint` flag. `chat_log` stores the messages that turn added, keyed by the `session_id`
+  foreign key, with the turn timestamp, a per-turn sequence, and per-message search text.
+- Turns store only their delta. Responses requests append the new messages after their
+  `previous_response_id`; compaction writes a checkpoint. Chat Completions clients replay the whole
+  transcript, so the store matches the longest stored prefix and writes only the new suffix into
+  the same conversation instead of copying the conversation again.
 - Queries are filtered by the short API-key hash (`user_hash`) and response id. The agent is
   implicit in the database file.
 - `previous_response_id` works after a restart and is rejected if the id belongs to another user
   key hash or agent.
 - `store: false` skips writing the new response, but earlier stored ids remain usable.
 - `GET /v1/responses/:id` searches the agent databases for the requesting key hash.
-- `server_session_search` searches only the current user's rows in the current agent database and
-  returns `response_id`, timestamp, and a snippet. Pass `response_id` to restrict the search to one
-  stored response.
+- `server_session_search` searches only the current user's messages in the current agent database.
+  It returns the best matching turn with its surrounding messages (`context`, ordered by timestamp
+  and insertion order), plus `response_id`, conversation id, timestamp, and a snippet for other
+  matches. Pass `response_id` to restrict the search to one stored response.
+- The old full-snapshot schema (`messages` JSON per row) is migrated automatically on startup.
 
 ## Agent handoffs
 

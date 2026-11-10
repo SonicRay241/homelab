@@ -97,12 +97,15 @@ export function sessionSearchTool(store: SessionStore, userHash: string): AgentT
     name: "session_search",
     label: "Session Search",
     description:
-      "Search this user's persisted past conversations. Returns response_id, timestamp, and a short snippet. " +
+      "Search this user's persisted past conversations. Returns the best match with its surrounding " +
+      "messages (`context`), plus other matches with response_id, timestamp, and a short snippet. " +
       "Use it when the user refers to something discussed earlier that is no longer in context.",
     parameters: SessionSearchParams,
     execute: async (_toolCallId, params) => {
       const results = store.search(userHash, params.query, params.limit ?? 5, params.response_id);
-      return result({ success: true, query: params.query, results });
+      const top = results[0];
+      const context = top ? store.context(userHash, top.message_id) : [];
+      return result({ success: true, query: params.query, results, context });
     },
   };
 }
