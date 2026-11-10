@@ -104,7 +104,7 @@ async function buildBaseSystemPrompt(
   const store = new MemoryStore(memoryDirectory(config, userId));
   const snapshot = await store.snapshot();
   const targets = agentIds.filter((id) => id !== config.agentId);
-  const pending = handoffStore.countPending(userHash, config.agentId);
+  const pending = handoffStore.countPending({ userId, userHash, agent: config.agentId });
   return [
     await loadSoul(config),
     SERVER_TOOL_INSTRUCTIONS,
@@ -174,6 +174,8 @@ export interface RunOptions {
   sessionStore: SessionStore;
   handoffStore: HandoffStore;
   agentIds: string[];
+  /** User ids allowed to use this agent; user-to-user handoff targets are validated against it. */
+  knownUsers: string[];
   /** MCP tools loaded for this agent at startup. */
   mcpTools: AgentTool[];
   body: Record<string, unknown>;
@@ -597,7 +599,8 @@ export async function runResponse(options: RunOptions): Promise<Record<string, u
   }
 
   const contextMessages = [...history, ...converted.messages];
-  const validTargets = agentIds.filter((id) => id !== config.agentId);
+  const validAgents = agentIds.filter((id) => id !== config.agentId);
+  const scope = { userId, userHash, agent: config.agentId };
   const handoffTranscript = messagesToSearchText(contextMessages.slice(-20)).slice(-20_000);
   const serverTools: AgentTool[] = [
     namespaceServerTool(memoryTool(new MemoryStore(memoryDirectory(config, userId)))),
@@ -605,15 +608,15 @@ export async function runResponse(options: RunOptions): Promise<Record<string, u
     namespaceServerTool(
       handoffSendTool({
         store: handoffStore,
-        userHash,
-        sourceAgent: config.agentId,
-        validTargets,
+        scope,
+        validAgents,
+        validUsers: options.knownUsers.filter((id) => id !== userId),
         sourceResponseId: normalized.previousResponseId ?? null,
         transcript: handoffTranscript,
       }),
     ),
-    namespaceServerTool(handoffInboxTool(handoffStore, userHash, config.agentId)),
-    namespaceServerTool(handoffReadTool(handoffStore, userHash, config.agentId)),
+    namespaceServerTool(handoffInboxTool(handoffStore, scope)),
+    namespaceServerTool(handoffReadTool(handoffStore, scope)),
     ...createWorkspaceTools(workspaceDirectory(config, userHash)).map((tool) => namespaceServerTool(tool)),
     ...options.mcpTools,
   ];

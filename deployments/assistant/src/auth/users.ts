@@ -48,6 +48,11 @@ export class UserRegistry {
     return this.users.size;
   }
 
+  /** Distinct user ids, used to validate user-to-user handoff targets. */
+  userIds(): string[] {
+    return [...new Set(this.users.values())].sort();
+  }
+
   /** User id for a bearer token, or null when the token is unknown. */
   resolve(token: string): string | null {
     if (!token) return null;

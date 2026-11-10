@@ -133,6 +133,7 @@ function streamResponse(
   requestedModel: string,
   userId: string,
   userHash: string,
+  knownUsers: string[],
   mcpTools: McpAgentConnection["tools"],
   requestTelemetry: RequestTelemetry,
   trace: TraceMode,
@@ -152,6 +153,7 @@ function streamResponse(
         sessionStore,
         handoffStore,
         agentIds: allowedAgentIds,
+        knownUsers,
         mcpTools,
         telemetry: requestTelemetry,
         body,
@@ -169,6 +171,7 @@ function streamChatCompletion(
   requestedModel: string,
   userId: string,
   userHash: string,
+  knownUsers: string[],
   mcpTools: McpAgentConnection["tools"],
   requestTelemetry: RequestTelemetry,
   trace: TraceMode,
@@ -189,6 +192,7 @@ function streamChatCompletion(
         sessionStore,
         handoffStore,
         agentIds: allowedAgentIds,
+        knownUsers,
         mcpTools,
         telemetry: requestTelemetry,
         body,
@@ -259,7 +263,8 @@ async function handleRequest(request: Request, url: URL, requestTelemetry: Reque
     }
     const rawLimit = Number(url.searchParams.get("limit") ?? 20);
     const limit = Number.isFinite(rawLimit) ? rawLimit : 20;
-    return json({ object: "list", data: handoffStore.list(userHash, target.id, statusParam, limit) });
+    const scope = { userId, userHash, agent: target.id };
+    return json({ object: "list", data: handoffStore.list(scope, statusParam, limit) });
   }
 
   const consumeHandoff = path.match(/^\/(?:v1\/)?handoffs\/([^/]+)\/consume$/)?.[1];
@@ -267,7 +272,7 @@ async function handleRequest(request: Request, url: URL, requestTelemetry: Reque
     const target = requireAgentFromQuery(url, userId);
     if (target instanceof Response) return target;
     const id = decodeURIComponent(consumeHandoff);
-    if (!handoffStore.consume(id, userHash, target.id)) {
+    if (!handoffStore.consume(id, { userId, userHash, agent: target.id })) {
       return apiError("Handoff not found", 404, "not_found");
     }
     return json({ success: true, id, status: "consumed" });
@@ -277,7 +282,7 @@ async function handleRequest(request: Request, url: URL, requestTelemetry: Reque
   if (request.method === "GET" && handoffId) {
     const target = requireAgentFromQuery(url, userId);
     if (target instanceof Response) return target;
-    const record = handoffStore.get(decodeURIComponent(handoffId), userHash, target.id);
+    const record = handoffStore.get(decodeURIComponent(handoffId), { userId, userHash, agent: target.id });
     if (!record) return apiError("Handoff not found", 404, "not_found");
     if (url.searchParams.get("format") === "markdown") {
       return new Response(renderHandoffMarkdown(record), {
@@ -345,6 +350,7 @@ async function handleRequest(request: Request, url: URL, requestTelemetry: Reque
           requestedModel,
           userId,
           userHash,
+          registry.userIds().filter((id) => isUserAllowed(agent.config, id)),
           mcpTools,
           requestTelemetry,
           trace,
@@ -360,6 +366,7 @@ async function handleRequest(request: Request, url: URL, requestTelemetry: Reque
         requestedModel,
         userId,
         userHash,
+        registry.userIds().filter((id) => isUserAllowed(agent.config, id)),
         mcpTools,
         requestTelemetry,
         trace,
@@ -377,6 +384,7 @@ async function handleRequest(request: Request, url: URL, requestTelemetry: Reque
         sessionStore,
         handoffStore,
         agentIds: allowedAgentIds,
+        knownUsers: registry.userIds().filter((id) => isUserAllowed(agent.config, id)),
         mcpTools,
         telemetry: requestTelemetry,
         body,

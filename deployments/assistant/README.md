@@ -43,9 +43,10 @@ client ──Bearer sk-...──> assistant :8787
 - Multi-agent: every `BASEDIR/agent/<id>/` directory with a `SOUL.md` is selectable. `/v1/models`
   lists those ids, and the request `model` field selects one. `.env` remains the required default
   backend; `BASEDIR/agent/<id>/config.yaml` can override the backend URL, key, or model per agent.
-- Agent handoffs: `server_handoff_send` passes research/context to another agent; the recipient uses
-  `server_handoff_inbox` / `server_handoff_read`. Handoffs live in `BASEDIR/handoffs.db` (table
-  `handoff`), scoped by API-key hash and target agent, and are also available over HTTP.
+- Handoffs: `server_handoff_send` passes research/context to another agent (same user) or another
+  user (same agent); the recipient uses `server_handoff_inbox` / `server_handoff_read`. Handoffs live
+  in `BASEDIR/handoffs.db` (table `handoff`), scoped by recipient user id and agent, and are also
+  available over HTTP.
 - SOUL prompt and memory are scoped per agent (`BASEDIR/agent/<agent>/users/<user>/memories/`).
 
 ## Setup
@@ -387,29 +388,44 @@ One SQLite database per agent: `BASEDIR/agent/<agent>/sessions.db` (WAL mode), t
   matches. Pass `response_id` to restrict the search to one stored response.
 - The old full-snapshot schema (`messages` JSON per row) is migrated automatically on startup.
 
-## Agent handoffs
+## Handoffs
 
-Sessions are per agent, so cross-agent context uses a central `BASEDIR/handoffs.db` with table
-`handoff`. Rows hold source/target agent, a title, summary, free-form context, an optional recent
-transcript, `source_response_id`, and `pending` / `read` / `consumed` status. They are scoped by the
-short API-key hash and target agent.
+Handoffs move context between conversations that cannot see each other:
+
+- **Agent to agent**: same user, another agent. Sessions are per agent, so this is how one agent
+  tells another what it found.
+- **User to user**: same agent, another user. The recipient reads it from their own inbox the next
+  time they talk to that agent.
+
+Both kinds live in one central `BASEDIR/handoffs.db` (table `handoff`) with a `kind` column
+(`agent` / `user`), source and target user ids, source and target agents, a title, summary,
+free-form context, an optional recent transcript, `source_response_id`, and `pending` / `read` /
+`consumed` status.
+
+Rows are addressed to a **user id plus agent**, not a key. One user may have several API keys; any
+of them opens the same inbox. Agent-to-agent rows also store the user's current key hash, but the
+user id is what authorizes delivery. Rows created before user ids were stored (legacy
+`user_hash`-only schema) are migrated automatically and remain scoped by key hash.
 
 Server tools:
 
 | Tool | Behavior |
 | --- | --- |
-| `server_handoff_send` | Send context to another agent (validated target; not itself). Includes the last 20 source messages unless `include_transcript: false`. |
-| `server_handoff_inbox` | List handoffs for the current agent (`pending` by default; `read`, `consumed`, `all`). |
+| `server_handoff_send` | Send context. Set exactly one of `target_agent` (same user, different agent) or `target_user` (same agent, different user). Targets are validated against the agents/users allowed for the calling key. Includes the last 20 source messages unless `include_transcript: false`. |
+| `server_handoff_inbox` | List handoffs for the current user and agent (`pending` by default; `read`, `consumed`, `all`). Entries include `kind`, `source_agent`, and `source_user`. |
 | `server_handoff_read` | Load one handoff, mark it read, and consume it by default (`consume: false` to keep it). |
 
-The target agent's system prompt shows the pending count at conversation start; the inbox tool is
-live, so new handoffs remain visible without restarting. Handoffs are scoped to the same API key
-hash: use the same key for the source agent and the recipient.
+The target's system prompt shows the pending count at conversation start; the inbox tool is live,
+so new handoffs appear without restarting. A user-to-user handoff is delivered to the recipient's
+inbox on the same agent, so the recipient must have access to that agent. Use a shared agent for
+user-to-user handoff; the target user id must exist in the auth registry (Infisical secret name or
+`ASSISTANT_API_KEYS` value).
 
-HTTP for external harnesses (OpenCode, omp, scripts):
+HTTP for external harnesses (OpenCode, omp, scripts). The key identifies the recipient user; the
+`target` query selects the recipient agent:
 
 ```bash
-# inbox for an agent
+# inbox for one agent
 curl "http://localhost:8787/v1/handoffs?target=coding&status=pending" \
   -H "Authorization: Bearer $KEY"
 
@@ -455,8 +471,8 @@ not passed in its environment.
 
 - Transcripts and response ids persist in `BASEDIR/agent/<agent>/sessions.db`; memory files,
   workspaces, and handoffs also survive restarts. Sessions are filtered by the short API-key hash,
-  so rotating a user's key starts a fresh session namespace. `store: false` skips persistence for
-  that response.
+  so rotating a user's key starts a fresh session namespace (handoffs are addressed to the user id,
+  so a new key still reaches the same inbox). `store: false` skips persistence for that response.
 - Auto-compaction runs before the model call and after the input-limit estimate; the summary call
   uses the same backend model and is not counted as user-visible output tokens.
 - `MAX_INPUT_TOKENS` / `maxInputTokens` rejects oversized requests with `400
