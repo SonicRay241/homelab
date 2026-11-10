@@ -33,6 +33,12 @@ services:
       - dokploy-network
     volumes:
       - pi_assistant_data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 192M
+        reservations:
+          memory: 64M
 
 volumes:
   pi_assistant_data:

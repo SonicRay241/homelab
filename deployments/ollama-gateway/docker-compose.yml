@@ -26,6 +26,11 @@ services:
       - 91.239.100.100
       - 89.233.43.71
 
+    deploy:
+      resources:
+        limits:
+          memory: 1.5G # Will serve local embedding model soon
+
   models:
     image: alpine/ollama:latest
     restart: "no"
@@ -63,6 +68,10 @@ services:
     networks:
       - default
       - dokploy-network
+    deploy:
+      resources:
+        limits:
+          memory: 128M
 
 volumes:
   ollama_data:
