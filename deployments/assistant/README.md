@@ -293,18 +293,24 @@ curl http://localhost:8787/v1/chat/completions \
 - The conversation is **stateless**: the client replays the full message list each turn and the
   server never merges stored history, so prompts are not duplicated. `store` still controls whether
   the turn is written to the session database for `server_session_search` and handoffs.
-- Streaming emits one role chunk, text deltas as `delta.content`, client function calls as
+- Streaming emits one role chunk, text deltas as `delta.content`, model reasoning as
+  `delta.reasoning_content` (when the backend returns it), client function calls as
   `delta.tool_calls`, then a finish chunk (`stop`, `tool_calls`, or `length`), an optional usage
-  chunk, and `[DONE]`. Server tool calls never appear as `tool_calls`; with `x-pi-trace` they are
-  appended to `delta.content` as trace text.
+  chunk, and `[DONE]`. Non-streaming messages carry the same reasoning as `reasoning_content`.
+  Server tool calls never appear as `tool_calls`; with `x-pi-trace` they are appended to
+  `delta.content` as trace text.
 
 Also implemented: `GET /v1/responses/:id` (if `store` was not `false`), `GET /v1/models/:id`,
 `GET /v1/handoffs`, `GET /v1/handoffs/:id`, `POST /v1/handoffs/:id/consume`,
 `GET /health` (`{ok,authReady,users,agents}`), CORS preflight. Errors use the OpenAI
 `{error:{message,type,param,code}}` shape.
 Streaming emits the Responses SSE sequence (`response.created`, `response.in_progress`,
-`response.output_item.added`, `response.output_text.delta`, `response.function_call_arguments.*`,
-`response.completed` / `response.failed` / `response.incomplete`, `error`).
+`response.output_item.added`, `response.output_text.delta`,
+`response.reasoning_summary_part.added` / `response.reasoning_summary_text.delta` /
+`response.reasoning_summary_text.done` / `response.reasoning_summary_part.done`,
+`response.function_call_arguments.*`, `response.completed` / `response.failed` /
+`response.incomplete`, `error`). Model reasoning appears as a `reasoning` output item with
+`summary: [{type: "summary_text", ...}]` in non-streaming responses.
 
 ### Server-tool traces
 

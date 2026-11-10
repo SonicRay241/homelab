@@ -16,58 +16,51 @@ import { runResponse } from "../src/runner.ts";
 import { SessionStore } from "../src/sessions.ts";
 
 const captured: Record<string, unknown>[] = [];
-let backendTool = false;
+type BackendMode = "text" | "tool" | "reasoning";
+let backendMode: BackendMode = "text";
+
+function chunk(value: unknown): string {
+  return `data: ${JSON.stringify(value)}\n\n`;
+}
+
+function delta(value: Record<string, unknown>, finish: string | null = null, usage?: Record<string, unknown>): string {
+  return chunk({
+    id: "chatcmpl-test",
+    object: "chat.completion.chunk",
+    created: 0,
+    model: "fake",
+    choices: [{ index: 0, delta: value, finish_reason: finish }],
+    ...(usage ? { usage } : {}),
+  });
+}
 
 const backend = Bun.serve({
   port: 0,
   async fetch(req) {
     if (new URL(req.url).pathname !== "/v1/chat/completions") return new Response("not found", { status: 404 });
     captured.push((await req.json()) as Record<string, unknown>);
-    const chunk = (value: unknown) => `data: ${JSON.stringify(value)}\n\n`;
-    const body = backendTool
-      ? chunk({
-          id: "chatcmpl-test",
-          object: "chat.completion.chunk",
-          created: 0,
-          model: "fake",
-          choices: [
-            {
-              index: 0,
-              delta: {
-                tool_calls: [
-                  { index: 0, id: "call_new", type: "function", function: { name: "bash", arguments: '{"command":"ls"}' } },
-                ],
-              },
-              finish_reason: null,
-            },
+    const usage = { prompt_tokens: 4, completion_tokens: 1, total_tokens: 5 };
+    const parts: string[] = [];
+    if (backendMode === "tool") {
+      parts.push(
+        delta({
+          tool_calls: [
+            { index: 0, id: "call_new", type: "function", function: { name: "bash", arguments: '{"command":"ls"}' } },
           ],
-        }) +
-        chunk({
-          id: "chatcmpl-test",
-          object: "chat.completion.chunk",
-          created: 0,
-          model: "fake",
-          choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
-          usage: { prompt_tokens: 4, completion_tokens: 1, total_tokens: 5 },
-        }) +
-        "data: [DONE]\n\n"
-      : chunk({
-          id: "chatcmpl-test",
-          object: "chat.completion.chunk",
-          created: 0,
-          model: "fake",
-          choices: [{ index: 0, delta: { content: "ok" }, finish_reason: null }],
-        }) +
-        chunk({
-          id: "chatcmpl-test",
-          object: "chat.completion.chunk",
-          created: 0,
-          model: "fake",
-          choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-          usage: { prompt_tokens: 4, completion_tokens: 1, total_tokens: 5 },
-        }) +
-        "data: [DONE]\n\n";
-    return new Response(body, { headers: { "content-type": "text/event-stream" } });
+        }),
+      );
+      parts.push(delta({}, "tool_calls", usage));
+    } else if (backendMode === "reasoning") {
+      parts.push(delta({ reasoning_content: "think " }));
+      parts.push(delta({ reasoning_content: "more" }));
+      parts.push(delta({ content: "answer" }));
+      parts.push(delta({}, "stop", usage));
+    } else {
+      parts.push(delta({ content: "ok" }));
+      parts.push(delta({}, "stop", usage));
+    }
+    parts.push("data: [DONE]\n\n");
+    return new Response(parts.join(""), { headers: { "content-type": "text/event-stream" } });
   },
 });
 
@@ -181,7 +174,7 @@ async function streamChat(
 afterAll(() => backend.stop(true));
 
 afterEach(async () => {
-  backendTool = false;
+  backendMode = "text";
   for (const store of stores.splice(0)) store.close();
   await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
@@ -399,10 +392,61 @@ describe("chat completions through runResponse", () => {
   });
 });
 
+describe("reasoning streaming", () => {
+  it("emits reasoning items and reasoning_content for chat clients", async () => {
+    const { config, sessions, handoffs } = await setup();
+    backendMode = "reasoning";
+    const events: { type: string; [key: string]: unknown }[] = [];
+    const response = await runResponse({
+      config,
+      model,
+      requestedModel: "default",
+      userId: "alice",
+      userHash: "hash",
+      sessionStore: sessions,
+      handoffStore: handoffs,
+      agentIds: ["default"],
+      mcpTools: [],
+      body: { input: "hi" },
+      trace: "no",
+      sse: {
+        send: (type, payload) => events.push({ type, ...payload }),
+        close: () => {},
+      },
+    });
+
+    const deltas = events.filter((event) => event.type === "response.reasoning_summary_text.delta");
+    expect(deltas.map((event) => event.delta)).toEqual(["think ", "more"]);
+    expect(events.some((event) => event.type === "response.reasoning_summary_text.done")).toBe(true);
+
+    const output = Array.isArray(response.output) ? (response.output as Record<string, unknown>[]) : [];
+    expect(output[0]).toMatchObject({
+      type: "reasoning",
+      summary: [{ type: "summary_text", text: "think more" }],
+    });
+    expect(output[1]).toMatchObject({ type: "message", content: [{ type: "output_text", text: "answer" }] });
+
+    const chat = chatCompletionShape(response, "default") as {
+      choices: { message: Record<string, unknown> }[];
+    };
+    expect(chat.choices[0]?.message.reasoning_content).toBe("think more");
+  });
+
+  it("streams reasoning_content chunks for streamed chat completions", async () => {
+    const { config, sessions, handoffs } = await setup();
+    backendMode = "reasoning";
+    const lines = await streamChat(config, sessions, handoffs, [{ role: "user", content: "hi" }]);
+    const text = lines.join("\n");
+    expect(text).toContain('"reasoning_content":"think "');
+    expect(text).toContain('"reasoning_content":"more"');
+    expect(text).toContain('"content":"answer"');
+  });
+});
+
 describe("replayed transcripts", () => {
   it("does not re-emit client tool calls from the input as new output", async () => {
     const { config, sessions, handoffs } = await setup();
-    backendTool = true;
+    backendMode = "tool";
     const body = {
       input: [
         { role: "user", content: "review" },

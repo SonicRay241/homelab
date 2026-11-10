@@ -38,6 +38,7 @@ import {
   convertInput,
   extractClientTools,
   outputFunctionCallItem,
+  outputReasoningItem,
   outputTextItem,
   responseShape,
   type ClientTool,
@@ -258,6 +259,7 @@ export class ResponseEmitter {
   incomplete = false;
 
   private message?: { id: string; text: string; index: number };
+  private reasoning?: { id: string; text: string; index: number; item: OutputItem };
   private readonly serverToolArgs = new Map<string, unknown>();
   private readonly createdAt = Math.floor(Date.now() / 1000);
 
@@ -355,6 +357,59 @@ export class ResponseEmitter {
     this.sse?.send("response.output_item.done", { output_index: message.index, item });
   }
 
+  private ensureReasoningItem(): { id: string; text: string; index: number; item: OutputItem } {
+    if (this.reasoning) return this.reasoning;
+    const index = this.output.length;
+    const id = newId("rs");
+    const item = outputReasoningItem(id, "");
+    // Reserve the slot now so the message index stays correct if text follows.
+    this.output.push(item);
+    this.reasoning = { id, text: "", index, item };
+    this.sse?.send("response.output_item.added", {
+      output_index: index,
+      item: { id, type: "reasoning", status: "in_progress", summary: [] },
+    });
+    this.sse?.send("response.reasoning_summary_part.added", {
+      item_id: id,
+      output_index: index,
+      summary_index: 0,
+      part: { type: "summary_text", text: "" },
+    });
+    return this.reasoning;
+  }
+
+  private appendReasoning(delta: string): void {
+    const reasoning = this.ensureReasoningItem();
+    reasoning.text += delta;
+    const part = reasoning.item.summary?.[0];
+    if (part) part.text = reasoning.text;
+    this.sse?.send("response.reasoning_summary_text.delta", {
+      item_id: reasoning.id,
+      output_index: reasoning.index,
+      summary_index: 0,
+      delta,
+    });
+  }
+
+  private finishReasoning(): void {
+    const reasoning = this.reasoning;
+    this.reasoning = undefined;
+    if (!reasoning) return;
+    this.sse?.send("response.reasoning_summary_text.done", {
+      item_id: reasoning.id,
+      output_index: reasoning.index,
+      summary_index: 0,
+      text: reasoning.text,
+    });
+    this.sse?.send("response.reasoning_summary_part.done", {
+      item_id: reasoning.id,
+      output_index: reasoning.index,
+      summary_index: 0,
+      part: reasoning.item.summary?.[0],
+    });
+    this.sse?.send("response.output_item.done", { output_index: reasoning.index, item: reasoning.item });
+  }
+
   private emitFunctionCall(call: ToolCall): void {
     const item = outputFunctionCallItem(newId("fc"), call.id || newId("call"), call.name, call.arguments);
     const index = this.output.length;
@@ -410,6 +465,14 @@ export class ResponseEmitter {
     switch (event.type) {
       case "message_update": {
         const update = event.assistantMessageEvent;
+        if (update.type === "thinking_delta") {
+          this.appendReasoning(update.delta);
+          return;
+        }
+        if (update.type === "thinking_end") {
+          this.finishReasoning();
+          return;
+        }
         if (update.type !== "text_delta") return;
         const message = this.ensureMessageItem();
         message.text += update.delta;
@@ -425,6 +488,7 @@ export class ResponseEmitter {
       case "message_end": {
         const message = event.message;
         if (message.role !== "assistant") return;
+        this.finishReasoning();
         this.addUsage(message);
         const hasServerCall = message.content.some(
           (part) => part.type === "toolCall" && isServerToolName(part.name),
@@ -478,6 +542,7 @@ export class ResponseEmitter {
   }
 
   complete(): Record<string, unknown> {
+    this.finishReasoning();
     this.finishMessage();
     const status = this.failure ? "failed" : this.incomplete ? "incomplete" : "completed";
     const response = this.response(status);

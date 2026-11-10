@@ -274,13 +274,18 @@ export interface RunUsage {
 
 export interface OutputItem {
   id: string;
-  type: "message" | "function_call";
+  type: "message" | "function_call" | "reasoning";
   status: "completed";
   role?: "assistant";
   content?: { type: "output_text"; text: string; annotations: unknown[] }[];
+  summary?: { type: "summary_text"; text: string }[];
   call_id?: string;
   name?: string;
   arguments?: string;
+}
+
+export function outputReasoningItem(id: string, text: string): OutputItem {
+  return { id, type: "reasoning", status: "completed", summary: [{ type: "summary_text", text }] };
 }
 
 export function outputTextItem(id: string, text: string): OutputItem {
@@ -479,6 +484,15 @@ function chatText(output: unknown[]): string {
     .join("");
 }
 
+function chatReasoning(output: unknown[]): string {
+  return output
+    .flatMap((item) => {
+      if (!isRecord(item) || item.type !== "reasoning" || !Array.isArray(item.summary)) return [];
+      return item.summary.flatMap((part) => (isRecord(part) && typeof part.text === "string" ? [part.text] : []));
+    })
+    .join("");
+}
+
 function chatToolCalls(output: unknown[]): Record<string, unknown>[] {
   return output.flatMap((item) => {
     if (!isRecord(item) || item.type !== "function_call") return [];
@@ -499,6 +513,7 @@ export function chatCompletionShape(
 ): Record<string, unknown> {
   const output = Array.isArray(response.output) ? response.output : [];
   const text = chatText(output);
+  const reasoning = chatReasoning(output);
   const toolCalls = chatToolCalls(output);
   const status = stringField(response.status) ?? "completed";
   return {
@@ -512,6 +527,7 @@ export function chatCompletionShape(
         message: {
           role: "assistant",
           content: text ? text : toolCalls.length ? null : "",
+          ...(reasoning ? { reasoning_content: reasoning } : {}),
           ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
         },
         finish_reason: toolCalls.length ? "tool_calls" : status === "incomplete" ? "length" : "stop",
@@ -619,6 +635,12 @@ export class ChatCompletionStream implements SseSink {
         this.chatId = chatCompletionId(stringField(response.id) ?? "");
         this.model = stringField(response.model) ?? "";
         this.delta({ role: "assistant", content: "" });
+        return;
+      }
+      case "response.reasoning_summary_text.delta":
+      case "response.reasoning_text.delta": {
+        const text = stringField(payload.delta);
+        if (text) this.delta({ reasoning_content: text });
         return;
       }
       case "response.output_text.delta": {
