@@ -23,8 +23,8 @@ services:
       start_period: 60s
 
     dns:
-      - 91.239.100.100
-      - 89.233.43.71
+      - 1.1.1.1
+      - 1.0.0.1
 
     deploy:
       resources:
