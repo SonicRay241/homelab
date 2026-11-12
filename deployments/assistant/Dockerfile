@@ -1,5 +1,10 @@
-FROM oven/bun:1-alpine
-RUN apk add --no-cache su-exec
+FROM oven/bun:1-debian
+# server_bash and MCP servers expect a normal Linux userland: bash, git, curl, jq,
+# ripgrep, python3, and Node/npm for npx-based MCP servers.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      bash ca-certificates curl git jq nodejs npm python3 ripgrep \
+ && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
 COPY package.json bun.lock ./
