@@ -12,6 +12,9 @@
 # maxInputTokens: 100000
 # compactionThreshold: 0.75
 # compactionKeepTurns: 6
+# Character budgets for MEMORY.md and USER.md.
+# memoryLimit: 2200
+# userLimit: 1375
 # allowedUsers:
 #   - alice
 # deniedUsers:

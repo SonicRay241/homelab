@@ -18,6 +18,8 @@ const ALLOWED_KEYS = new Set([
   "maxInputTokens",
   "compactionThreshold",
   "compactionKeepTurns",
+  "memoryLimit",
+  "userLimit",
   "allowedUsers",
   "deniedUsers",
   "reasoningEffort",
@@ -32,6 +34,10 @@ export interface AgentOverrides {
   maxInputTokens?: number;
   compactionThreshold?: number;
   compactionKeepTurns?: number;
+  /** Character budget for MEMORY.md. */
+  memoryLimit?: number;
+  /** Character budget for USER.md. */
+  userLimit?: number;
   allowedUsers?: string[];
   deniedUsers?: string[];
   reasoningEffort?: ReasoningEffort;
@@ -62,6 +68,13 @@ function reasoningEffortValue(value: unknown, key: string, file: string): Reason
 function reasoningEffortList(value: unknown, key: string, file: string): ReasoningEffort[] {
   if (!Array.isArray(value)) throw new Error(`${file}: ${key} must be an array of efforts`);
   return Array.from(new Set(value.map((entry) => reasoningEffortValue(entry, key, file))));
+}
+
+function positiveInteger(value: unknown, key: string, file: string): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    throw new Error(`${file}: ${key} must be a positive integer`);
+  }
+  return value;
 }
 
 function stringValue(value: unknown, key: string, file: string): string {
@@ -128,6 +141,8 @@ export function loadAgentOverrides(agentDir: string): AgentOverrides {
     }
     overrides.compactionKeepTurns = value;
   }
+  if ("memoryLimit" in parsed) overrides.memoryLimit = positiveInteger(parsed.memoryLimit, "memoryLimit", file);
+  if ("userLimit" in parsed) overrides.userLimit = positiveInteger(parsed.userLimit, "userLimit", file);
   if ("allowedUsers" in parsed) overrides.allowedUsers = userList(parsed.allowedUsers, "allowedUsers", file);
   if ("deniedUsers" in parsed) overrides.deniedUsers = userList(parsed.deniedUsers, "deniedUsers", file);
   if ("reasoningEffort" in parsed) {
@@ -155,6 +170,10 @@ export function applyAgentOverrides(config: AssistantConfig, overrides: AgentOve
     maxInputTokens: overrides.maxInputTokens ?? config.maxInputTokens,
     compactionThreshold: overrides.compactionThreshold ?? config.compactionThreshold,
     compactionKeepTurns: overrides.compactionKeepTurns ?? config.compactionKeepTurns,
+    memoryLimits: {
+      memory: overrides.memoryLimit ?? config.memoryLimits.memory,
+      user: overrides.userLimit ?? config.memoryLimits.user,
+    },
     allowedUsers: overrides.allowedUsers ?? config.allowedUsers,
     deniedUsers: overrides.deniedUsers ?? config.deniedUsers,
     reasoningEffort: overrides.reasoningEffort ?? config.reasoningEffort,

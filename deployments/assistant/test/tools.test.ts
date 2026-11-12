@@ -20,6 +20,14 @@ describe("server tool namespacing", () => {
     expect(namespaced.parameters).toBe(original.parameters);
   });
 
+  it("advertises the store's configured memory limits", () => {
+    const store = new MemoryStore("/tmp/assistant-tool-test", { memory: 500, user: 90 });
+    expect(memoryTool(store).description).toContain("memory 500 chars, user 90 chars");
+    expect(memoryTool(new MemoryStore("/tmp/assistant-tool-test")).description).toContain(
+      "memory 2200 chars, user 1375 chars",
+    );
+  });
+
   it("reserves the prefix for server tools while leaving client names alone", () => {
     expect(isServerToolName("server_memory")).toBe(true);
     expect(isServerToolName("server_bash")).toBe(true);

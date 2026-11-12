@@ -112,6 +112,7 @@ async function setup(): Promise<{ config: AssistantConfig; sessions: SessionStor
     maxInputTokens: 0,
     compactionThreshold: 1,
     compactionKeepTurns: 6,
+    memoryLimits: { memory: 2_200, user: 1_375 },
     basedir: root,
     agentsDir: join(root, "agents"),
     agentDir,

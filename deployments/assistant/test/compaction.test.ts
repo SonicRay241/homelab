@@ -43,6 +43,7 @@ function config(overrides: Partial<AssistantConfig> = {}): AssistantConfig {
     maxInputTokens: 0,
     compactionThreshold: 0.75,
     compactionKeepTurns: 2,
+    memoryLimits: { memory: 2_200, user: 1_375 },
     basedir: "/tmp",
     agentsDir: "/tmp/agents",
     agentDir: "/tmp/agent",

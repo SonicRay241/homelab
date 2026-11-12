@@ -48,6 +48,9 @@ describe("agent CLI", () => {
     expect((await cli(["set", "research", "apiKey", "super-secret"], base)).code).toBe(0);
     expect((await cli(["set", "research", "reasoningEffort", "high"], base)).code).toBe(0);
     expect((await cli(["set", "research", "vision", "true"], base)).code).toBe(0);
+    expect((await cli(["set", "research", "memoryLimit", "4000"], base)).code).toBe(0);
+    expect((await cli(["set", "research", "userLimit", "900"], base)).code).toBe(0);
+    expect((await cli(["set", "research", "memoryLimit", "0"], base)).code).toBe(1);
     expect((await cli(["set", "research", "vision", "yes"], base)).code).toBe(1);
     expect((await cli(["set", "research", "allowedReasoningEfforts", "low,high,none"], base)).code).toBe(0);
     expect((await cli(["allow", "research", "bob"], base)).code).toBe(0);
@@ -62,6 +65,8 @@ describe("agent CLI", () => {
       deniedUsers: ["mallory"],
       reasoningEffort: "high",
       vision: true,
+      memoryLimit: 4_000,
+      userLimit: 900,
       allowedReasoningEfforts: ["low", "high", "off"],
     });
     expect(config.apiKey).toBe("super-secret");

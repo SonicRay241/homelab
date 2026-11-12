@@ -99,6 +99,8 @@ vision: true
 maxInputTokens: 100000
 compactionThreshold: 0.75
 compactionKeepTurns: 6
+memoryLimit: 2200
+userLimit: 1375
 allowedUsers:
   - alice
 deniedUsers:
@@ -119,6 +121,9 @@ allowedReasoningEfforts:
   When `false`, images from clients or tools are dropped instead of being sent to the backend.
 - `compactionThreshold` is in `[0,1]` (`0` disables compaction); `compactionKeepTurns` is a
   positive integer.
+- `memoryLimit` / `userLimit` set the character budgets for this agent's `MEMORY.md` / `USER.md`
+  (defaults `2200` / `1375`, positive integers). They apply to the store's enforcement, the usage
+  counters, and the limit text in the system prompt and `server_memory` tool description.
 - `allowedUsers` is an optional whitelist; when non-empty, only those Infisical user ids may use the
   agent. `deniedUsers` is a blacklist and always wins. Restricted agents are hidden from that
   user's `/v1/models` and return `403 user_not_allowed`.
@@ -210,7 +215,8 @@ BASEDIR/agent/
   working. Agent ids win if an id collides with an alias.
 - Agent directories are discovered at startup; restart after adding, removing, or renaming one.
 - Each agent applies its own `config.yaml` overrides (backend URL/key/model, `vision`,
-  `maxInputTokens`, `compactionThreshold`, `compactionKeepTurns`, `allowedUsers`, `deniedUsers`), SOUL prompt,
+  `maxInputTokens`, `compactionThreshold`, `compactionKeepTurns`, `memoryLimit`, `userLimit`,
+  `allowedUsers`, `deniedUsers`), SOUL prompt,
   sessions, workspace, memory namespace, and `mcp.json` servers. Infisical, port, `BASEDIR`, and
   refresh settings remain process-wide.
 
@@ -359,7 +365,8 @@ Paths: `BASEDIR/agent/<agent>/users/<user>/memories/{MEMORY.md,USER.md}`.
 The model calls `server_memory` with `target` (`memory` or `user`), `action` (`add`, `patch`, `remove`,
 `batch`), `content`, `old_text`, `operations`. Entries are separated by a line containing only `§`.
 Writes are atomic and serialized; the limit is checked on the batch result, so one batch can free
-space and add in the same call. Duplicate adds are no-ops, ambiguous `old_text` matches fail,
+space and add in the same call. Limits are per agent: `memoryLimit` / `userLimit` in `config.yaml`
+override the built-in `2200` / `1375` character budgets for `MEMORY.md` / `USER.md`. Duplicate adds are no-ops, ambiguous `old_text` matches fail,
 invisible/bidi Unicode and the delimiter are rejected. The system prompt snapshot is frozen for the
 life of a conversation; tool results always show live entries and usage.
 

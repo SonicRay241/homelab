@@ -58,7 +58,7 @@ export function memoryTool(store: MemoryStore): AgentTool<typeof MemoryParams> {
     label: "Memory",
     description:
       "Persist durable facts across conversations. target=memory is your own notes; target=user is the user profile. " +
-      "Actions: add, patch (old_text + content), remove (old_text), or batch. Limits: memory 2200 chars, user 1375 chars. " +
+      `Actions: add, patch (old_text + content), remove (old_text), or batch. Limits: memory ${store.limits.memory} chars, user ${store.limits.user} chars. ` +
       "Memory injected into the system prompt is a frozen snapshot; tool results always show the live state.",
     parameters: MemoryParams,
     execute: async (_toolCallId, params) => {

@@ -27,6 +27,7 @@ const BASE: AssistantConfig = {
   maxInputTokens: 0,
   compactionThreshold: 0.75,
   compactionKeepTurns: 6,
+  memoryLimits: { memory: 2_200, user: 1_375 },
   basedir: "/tmp/assistant-data",
   agentsDir: "/tmp/assistant-agents",
   agentDir: "/tmp/assistant-agent",
@@ -95,6 +96,22 @@ allowedReasoningEfforts:
       reasoningEffort: "high",
       allowedReasoningEfforts: ["low", "high", "off"],
     });
+  });
+
+  it("reads per-agent memory markdown limits", async () => {
+    expect(loadAgentOverrides(await agentDir("memoryLimit: 500\nuserLimit: 90\n"))).toEqual({
+      memoryLimit: 500,
+      userLimit: 90,
+    });
+  });
+
+  it("rejects invalid memory limits", async () => {
+    for (const yaml of ["memoryLimit: 0\n", "memoryLimit: -1\n", "memoryLimit: 1.5\n", 'memoryLimit: "500"\n']) {
+      await expect(async () => loadAgentOverrides(await agentDir(yaml))).toThrow("must be a positive integer");
+    }
+    await expect(async () => loadAgentOverrides(await agentDir("userLimit: 0\n"))).toThrow(
+      "must be a positive integer",
+    );
   });
 
   it("reads the vision flag", async () => {
@@ -199,6 +216,19 @@ describe("applyAgentOverrides", () => {
     expect(config.compactionKeepTurns).toBe(4);
     expect(BASE.compactionThreshold).toBe(0.75);
     expect(BASE.compactionKeepTurns).toBe(6);
+  });
+
+  it("overrides each memory markdown limit independently", () => {
+    expect(applyAgentOverrides(BASE, { memoryLimit: 4_000 }).memoryLimits).toEqual({
+      memory: 4_000,
+      user: 1_375,
+    });
+    expect(applyAgentOverrides(BASE, { userLimit: 800 }).memoryLimits).toEqual({
+      memory: 2_200,
+      user: 800,
+    });
+    expect(applyAgentOverrides(BASE, {}).memoryLimits).toEqual({ memory: 2_200, user: 1_375 });
+    expect(BASE.memoryLimits).toEqual({ memory: 2_200, user: 1_375 });
   });
 
   it("overrides reasoning effort and allowlist", () => {

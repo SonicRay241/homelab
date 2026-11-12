@@ -2,8 +2,15 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 export const ENTRY_DELIMITER = "\n§\n";
-export const MEMORY_LIMITS = { memory: 2_200, user: 1_375 } as const;
-export type MemoryTarget = keyof typeof MEMORY_LIMITS;
+
+/** Character budget per markdown file: MEMORY.md (agent notes) and USER.md (user profile). */
+export interface MemoryLimits {
+  memory: number;
+  user: number;
+}
+
+export const DEFAULT_MEMORY_LIMITS: MemoryLimits = { memory: 2_200, user: 1_375 };
+export type MemoryTarget = keyof MemoryLimits;
 export type MemoryAction = "add" | "patch" | "remove";
 
 const INVISIBLE = /[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/;
@@ -66,10 +73,18 @@ function validateContent(content: string): string {
  * and USER.md (user profile), entries separated by a line containing only §.
  * Writes are atomic and serialized; limits are checked against the resulting
  * entries, never against individual operations, so a batch can free space and
- * add in one call.
+ * add in one call. Limits default to `DEFAULT_MEMORY_LIMITS` and are overridden
+ * per agent.
  */
 export class MemoryStore {
-  constructor(readonly dir: string) {}
+  readonly limits: MemoryLimits;
+
+  constructor(
+    readonly dir: string,
+    limits: MemoryLimits = DEFAULT_MEMORY_LIMITS,
+  ) {
+    this.limits = { ...limits };
+  }
 
   file(target: MemoryTarget): string {
     return join(this.dir, target === "memory" ? "MEMORY.md" : "USER.md");
@@ -93,7 +108,7 @@ export class MemoryStore {
   }
 
   usage(entries: string[], target: MemoryTarget): MemoryUsage {
-    const limit = MEMORY_LIMITS[target];
+    const limit = this.limits[target];
     const chars = entries.join(ENTRY_DELIMITER).length;
     const percent = Math.round((chars / limit) * 100);
     return { chars, limit, percent, text: `${chars}/${limit} chars (${percent}%)` };
@@ -120,7 +135,7 @@ export class MemoryStore {
   }
 
   private checkLimit(entries: string[], target: MemoryTarget, addition = 0): void {
-    const limit = MEMORY_LIMITS[target];
+    const limit = this.limits[target];
     const chars = entries.join(ENTRY_DELIMITER).length;
     if (chars + addition <= limit) return;
     const over = chars + addition - limit;
@@ -255,9 +270,11 @@ export class MemoryStore {
   }
 }
 
-export const MEMORY_INSTRUCTIONS = `# Memory
+export function memoryInstructions(limits: MemoryLimits): string {
+  return `# Memory
 You have a \`server_memory\` tool backed by two small, persistent stores that are injected into your system prompt at the start of each conversation:
-- target "memory": your own notes (environment facts, conventions, lessons, completed work). Limit 2200 chars.
-- target "user": the user's profile (name, role, timezone, preferences, communication style). Limit 1375 chars.
+- target "memory": your own notes (environment facts, conventions, lessons, completed work). Limit ${limits.memory} chars.
+- target "user": the user's profile (name, role, timezone, preferences, communication style). Limit ${limits.user} chars.
 
 Save durable facts proactively. Do not save trivia, one-off task state, or large dumps. Memory persists only when you call the tool — never claim you remembered something unless the tool call succeeded. Use action "add" for new entries, "patch" with old_text plus content for a unique span, "remove" with old_text, or one "batch" of operations (same target) to consolidate. When the store is near capacity the tool returns the current entries and the number of chars to free; consolidate in a single batch and retry.`;
+}

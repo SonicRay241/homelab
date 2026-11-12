@@ -18,7 +18,7 @@ import {
 } from "./config.ts";
 import { compactMessages, compactionTokenThreshold, createLlmSummarizer } from "./compaction.ts";
 import { isRecord } from "./guards.ts";
-import { MemoryStore, MEMORY_INSTRUCTIONS } from "./memory.ts";
+import { MemoryStore, memoryInstructions } from "./memory.ts";
 import type { HandoffStore } from "./handoffs.ts";
 import { type SessionStore, messagesToSearchText } from "./sessions.ts";
 import {
@@ -101,7 +101,7 @@ async function buildBaseSystemPrompt(
   handoffStore: HandoffStore,
   agentIds: string[],
 ): Promise<string> {
-  const store = new MemoryStore(memoryDirectory(config, userId));
+  const store = new MemoryStore(memoryDirectory(config, userId), config.memoryLimits);
   const snapshot = await store.snapshot();
   const targets = agentIds.filter((id) => id !== config.agentId);
   const pending = handoffStore.countPending({ userId, userHash, agent: config.agentId });
@@ -112,7 +112,7 @@ async function buildBaseSystemPrompt(
     handoffInstructions(config.agentId, targets, pending),
     store.render("memory", snapshot.memory),
     store.render("user", snapshot.user),
-    MEMORY_INSTRUCTIONS,
+    memoryInstructions(config.memoryLimits),
   ].join("\n\n");
 }
 
@@ -603,7 +603,7 @@ export async function runResponse(options: RunOptions): Promise<Record<string, u
   const scope = { userId, userHash, agent: config.agentId };
   const handoffTranscript = messagesToSearchText(contextMessages.slice(-20)).slice(-20_000);
   const serverTools: AgentTool[] = [
-    namespaceServerTool(memoryTool(new MemoryStore(memoryDirectory(config, userId)))),
+    namespaceServerTool(memoryTool(new MemoryStore(memoryDirectory(config, userId), config.memoryLimits))),
     namespaceServerTool(sessionSearchTool(sessionStore, userHash)),
     namespaceServerTool(
       handoffSendTool({

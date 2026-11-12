@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ENTRY_DELIMITER, MemoryError, MemoryStore } from "../src/memory.ts";
+import { DEFAULT_MEMORY_LIMITS, ENTRY_DELIMITER, MemoryError, MemoryStore, memoryInstructions } from "../src/memory.ts";
 
 const dirs: string[] = [];
 
@@ -73,6 +73,32 @@ describe("MemoryStore", () => {
     expect(rendered).toContain("MEMORY (your personal notes)");
     expect(rendered).toContain("chars]");
     expect(rendered).toContain(`a${ENTRY_DELIMITER}b`);
+  });
+
+  it("enforces per-agent limits for each markdown file", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "assistant-memory-"));
+    dirs.push(dir);
+    const memory = new MemoryStore(dir, { memory: 60, user: 20 });
+
+    expect(memory.limits).toEqual({ memory: 60, user: 20 });
+    expect(DEFAULT_MEMORY_LIMITS).toEqual({ memory: 2_200, user: 1_375 });
+
+    await memory.add("memory", "m".repeat(55));
+    expect(memory.usage(await memory.load("memory"), "memory").limit).toBe(60);
+    await expect(memory.add("memory", "extra")).rejects.toBeInstanceOf(MemoryError);
+    await expect(memory.add("user", "u".repeat(30))).rejects.toBeInstanceOf(MemoryError);
+    await memory.add("user", "short profile");
+
+    expect(memory.render("memory", await memory.load("memory"))).toContain("/60 chars");
+    expect(memory.render("user", await memory.load("user"))).toContain("/20 chars");
+  });
+
+  it("renders the configured limits into the system prompt block", () => {
+    expect(memoryInstructions(DEFAULT_MEMORY_LIMITS)).toContain("Limit 2200 chars");
+    expect(memoryInstructions(DEFAULT_MEMORY_LIMITS)).toContain("Limit 1375 chars");
+    const instructions = memoryInstructions({ memory: 500, user: 90 });
+    expect(instructions).toContain("Limit 500 chars");
+    expect(instructions).toContain("Limit 90 chars");
   });
 
   it("blocks invisible unicode and the entry delimiter", async () => {

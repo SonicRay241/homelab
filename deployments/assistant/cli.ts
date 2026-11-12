@@ -21,6 +21,9 @@ const CONFIG_EXAMPLE = `# Optional per-agent overrides. Everything unset comes f
 # maxInputTokens: 100000
 # compactionThreshold: 0.75
 # compactionKeepTurns: 6
+# Character budgets for MEMORY.md and USER.md.
+# memoryLimit: 2200
+# userLimit: 1375
 # allowedUsers:
 #   - alice
 # deniedUsers:
@@ -46,6 +49,8 @@ const SET_KEYS = new Set([
   "maxInputTokens",
   "compactionThreshold",
   "compactionKeepTurns",
+  "memoryLimit",
+  "userLimit",
   "allowedUsers",
   "deniedUsers",
   "reasoningEffort",
@@ -119,6 +124,11 @@ function parseValue(key: string, raw: string): string | number | boolean | strin
   if (key === "compactionKeepTurns") {
     const value = Number(raw);
     if (!Number.isInteger(value) || value < 1) throw new Error("compactionKeepTurns must be a positive integer");
+    return value;
+  }
+  if (key === "memoryLimit" || key === "userLimit") {
+    const value = Number(raw);
+    if (!Number.isInteger(value) || value < 1) throw new Error(`${key} must be a positive integer`);
     return value;
   }
   if (key === "compactionThreshold") {

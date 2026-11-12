@@ -1,4 +1,5 @@
 import { resolveAgentDir, resolveAgentsDir, resolveBasedir } from "./basedir.ts";
+import { DEFAULT_MEMORY_LIMITS, type MemoryLimits } from "./memory.ts";
 
 export const REASONING_EFFORTS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
@@ -47,6 +48,8 @@ export interface AssistantConfig {
   compactionThreshold: number;
   /** Number of recent conversation units kept verbatim after compaction. */
   compactionKeepTurns: number;
+  /** Character budgets for MEMORY.md and USER.md. Per-agent `config.yaml` may override. */
+  memoryLimits: MemoryLimits;
   /** Root for agent configs, memory, sessions, workspaces, and handoffs. */
   basedir: string;
   /** Root directory holding one subdirectory per selectable agent. */
@@ -227,6 +230,7 @@ export function loadConfig(): AssistantConfig {
     maxInputTokens: nonNegativeIntEnv("MAX_INPUT_TOKENS", 0),
     compactionThreshold: ratioEnv("COMPACTION_THRESHOLD", 0.75),
     compactionKeepTurns: Math.max(1, intEnv("COMPACTION_KEEP_TURNS", 6)),
+    memoryLimits: { ...DEFAULT_MEMORY_LIMITS },
     basedir,
     agentsDir,
     agentDir,

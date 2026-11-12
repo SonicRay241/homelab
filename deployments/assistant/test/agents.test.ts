@@ -35,6 +35,7 @@ function baseConfig(agentsDir: string, agentDir: string): AssistantConfig {
     maxInputTokens: 0,
     compactionThreshold: 0.75,
     compactionKeepTurns: 6,
+    memoryLimits: { memory: 2_200, user: 1_375 },
     basedir: "/tmp/assistant-data",
     agentsDir,
     agentDir,
