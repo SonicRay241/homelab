@@ -2,6 +2,7 @@ import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { StringEnum, Type, type Static, type TSchema } from "@mariozechner/pi-ai";
 import { MemoryError, type MemoryStore, type MemoryTarget } from "./memory.ts";
 import type { HandoffScope, HandoffStore } from "./handoffs.ts";
+import { SKILL_NAME, type SkillStore } from "./skills.ts";
 import type { SessionStore } from "./sessions.ts";
 
 /** Client tool names are rejected if they use either reserved prefix, so collisions cannot happen. */
@@ -17,6 +18,123 @@ export function namespaceServerTool<TParameters extends TSchema, TDetails>(
   tool: AgentTool<TParameters, TDetails>,
 ): AgentTool<TParameters, TDetails> {
   return { ...tool, name: `${SERVER_TOOL_PREFIX}${tool.name}` };
+}
+
+export const SkillReadParams = Type.Object({
+  name: Type.String({ description: "Skill name, without .md" }),
+});
+
+const SkillWriteParams = Type.Object({
+  name: Type.String({ description: "Skill name, without .md; lowercase letters, digits, '-' or '_'" }),
+  content: Type.String({
+    description: "Full markdown content; start with '# Title' and put the one-line purpose on the next line",
+  }),
+});
+
+const SkillSearchParams = Type.Object({
+  query: Type.String({ description: "Case-insensitive text to find in skill contents" }),
+  limit: Type.Optional(Type.Number({ description: "Maximum results (default 10, max 50)" })),
+});
+
+const SkillDeleteParams = Type.Object({
+  name: Type.String({ description: "Skill name, without .md" }),
+});
+
+const SkillImportParams = Type.Object({
+  id: Type.String({ description: "Handoff id whose skill payload should be saved" }),
+  name: Type.Optional(Type.String({ description: "Override the skill name" })),
+});
+
+type SkillReadParams = Static<typeof SkillReadParams>;
+type SkillWriteParams = Static<typeof SkillWriteParams>;
+type SkillSearchParams = Static<typeof SkillSearchParams>;
+type SkillDeleteParams = Static<typeof SkillDeleteParams>;
+type SkillImportParams = Static<typeof SkillImportParams>;
+
+export function skillReadTool(store: SkillStore): AgentTool<typeof SkillReadParams> {
+  return {
+    name: "skill_read",
+    label: "Skill Read",
+    description: "Load one of this user's markdown skills by name.",
+    parameters: SkillReadParams,
+    execute: async (_toolCallId, params) => {
+      const content = await store.read(params.name);
+      if (content === null) return result({ success: false, error: `skill not found: ${params.name}` });
+      return result({ success: true, name: params.name, content });
+    },
+  };
+}
+
+export function skillWriteTool(store: SkillStore): AgentTool<typeof SkillWriteParams> {
+  return {
+    name: "skill_write",
+    label: "Skill Write",
+    description:
+      "Create or replace a markdown skill for this user. Skills live under users/<user>/skill/<name>.md " +
+      "and appear in the system prompt index as their first body line.",
+    parameters: SkillWriteParams,
+    execute: async (_toolCallId, params) => {
+      const written = await store.write(params.name, params.content);
+      return result({ success: true, name: written.name, created: written.created, chars: params.content.length });
+    },
+  };
+}
+
+export function skillSearchTool(store: SkillStore): AgentTool<typeof SkillSearchParams> {
+  return {
+    name: "skill_search",
+    label: "Skill Search",
+    description: "Search this user's skills by content and return matching skill names with line snippets.",
+    parameters: SkillSearchParams,
+    execute: async (_toolCallId, params) => {
+      const results = await store.search(params.query, params.limit ?? 10);
+      return result({ success: true, query: params.query, results });
+    },
+  };
+}
+
+export function skillDeleteTool(store: SkillStore): AgentTool<typeof SkillDeleteParams> {
+  return {
+    name: "skill_delete",
+    label: "Skill Delete",
+    description: "Delete one of this user's skills.",
+    parameters: SkillDeleteParams,
+    execute: async (_toolCallId, params) => {
+      const removed = await store.remove(params.name);
+      return result(removed ? { success: true, name: params.name } : { success: false, error: "skill not found" });
+    },
+  };
+}
+
+export function skillImportTool(
+  store: SkillStore,
+  handoffStore: HandoffStore,
+  scope: HandoffScope,
+): AgentTool<typeof SkillImportParams> {
+  return {
+    name: "skill_import",
+    label: "Skill Import",
+    description:
+      "Save the skill attached to a handoff addressed to this user and agent. Reading the handoff is not required.",
+    parameters: SkillImportParams,
+    execute: async (_toolCallId, params) => {
+      const record = handoffStore.get(params.id, scope);
+      if (!record) return result({ success: false, error: `handoff not found: ${params.id}` });
+      if (!record.skill || !record.skillContent) {
+        return result({ success: false, error: "handoff has no skill payload" });
+      }
+      const name = params.name?.trim() || record.skill;
+      if (!SKILL_NAME.test(name)) return result({ success: false, error: `invalid skill name: ${name}` });
+      const written = await store.write(name, record.skillContent);
+      return result({
+        success: true,
+        name: written.name,
+        created: written.created,
+        from_handoff: record.id,
+        source_user: record.sourceUserId,
+      });
+    },
+  };
 }
 
 export const SERVER_TOOL_INSTRUCTIONS = `# Server tools
@@ -111,6 +229,9 @@ export function sessionSearchTool(store: SessionStore, userHash: string): AgentT
 }
 
 const HandoffSendParams = Type.Object({
+  skill: Type.Optional(
+    Type.String({ description: "Skill name to attach from this user's skills (sends its markdown)" }),
+  ),
   target_agent: Type.Optional(
     Type.String({ description: "Agent id that should receive this handoff (same user)" }),
   ),
@@ -144,6 +265,7 @@ type HandoffReadParams = Static<typeof HandoffReadParams>;
 export function handoffSendTool(options: {
   store: HandoffStore;
   scope: HandoffScope;
+  skills?: SkillStore;
   validAgents: string[];
   validUsers: string[];
   sourceResponseId?: string | null;
@@ -184,6 +306,17 @@ export function handoffSendTool(options: {
         }
       }
 
+      let skill: string | null = null;
+      let skillContent: string | null = null;
+      if (params.skill) {
+        const name = params.skill.trim();
+        if (!SKILL_NAME.test(name)) return result({ success: false, error: `invalid skill name: ${name}` });
+        const content = options.skills ? await options.skills.read(name) : null;
+        if (content === null) return result({ success: false, error: `skill not found: ${name}` });
+        skill = name;
+        skillContent = content;
+      }
+
       const record = options.store.create({
         kind,
         sourceUserId: scope.userId,
@@ -197,6 +330,8 @@ export function handoffSendTool(options: {
         context: params.context,
         transcript: params.include_transcript === false ? "" : options.transcript,
         sourceResponseId: options.sourceResponseId,
+        skill,
+        skillContent,
       });
       return result({
         success: true,
@@ -205,6 +340,7 @@ export function handoffSendTool(options: {
           kind: record.kind,
           target_user: record.targetUserId,
           target_agent: record.targetAgent,
+          skill: record.skill,
           title: record.title,
           status: record.status,
           created_at: record.createdAt,

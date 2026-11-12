@@ -47,7 +47,7 @@ client ──Bearer sk-...──> assistant :8787
   user (same agent); the recipient uses `server_handoff_inbox` / `server_handoff_read`. Handoffs live
   in `BASEDIR/handoffs.db` (table `handoff`), scoped by recipient user id and agent, and are also
   available over HTTP.
-- SOUL prompt and memory are scoped per agent (`BASEDIR/agent/<agent>/users/<user>/memories/`).
+- SOUL prompt, memory, and skills are scoped per agent (`BASEDIR/agent/<agent>/users/<user>/`).
 
 ## Setup
 
@@ -63,9 +63,11 @@ bun run start
 
 ### Docker
 
-The image uses `oven/bun:1-alpine`, installs production dependencies, and runs the server as the
-`bun` user with `BASEDIR=/data`. The entrypoint starts as root only long enough to ensure
-`BASEDIR` is writable by `bun`, then drops privileges. This repairs existing root-owned volumes.
+The image uses `oven/bun:1-debian` with `bash`, `git`, `curl`, `jq`, `ripgrep`, `python3`, and
+Node/npm, so `server_bash` and `npx`-based MCP servers work. It installs production dependencies and
+runs the server as the `bun` user with `BASEDIR=/data`. The entrypoint starts as root only long enough
+to ensure `BASEDIR` is writable by `bun`, then drops privileges with `setpriv`. This repairs existing
+root-owned volumes.
 
 ```bash
 docker build -t pi-assistant .
@@ -76,8 +78,8 @@ docker run --rm -p 8787:8787 --env-file .env -v pi-assistant-data:/data pi-assis
   volumes are fixed automatically at startup.
 - Create an agent if the volume is empty, for example:
   `docker exec -u bun -it <container> bun run cli.ts new default`
-- The base image does not include Node/npm. MCP configs that use `npx` need `bunx` instead, or an
-  image extended with Node.
+- `bash`, `git`, `curl`, `jq`, `ripgrep`, `python3`, Node, and npm are installed; MCP configs can use
+  `npx` or `bunx`. The image is Debian-based, so the shell tools behave like a normal Linux host.
 
 In Infisical, create one secret per user in `INFISICAL_SECRET_PATH` (folder, e.g. `users`):
 secret name `alice`, value `sk-...`; secret name `bob`, value `sk-...`.
@@ -216,8 +218,8 @@ BASEDIR/agent/
 - Agent directories are discovered at startup; restart after adding, removing, or renaming one.
 - Each agent applies its own `config.yaml` overrides (backend URL/key/model, `vision`,
   `maxInputTokens`, `compactionThreshold`, `compactionKeepTurns`, `memoryLimit`, `userLimit`,
-  `allowedUsers`, `deniedUsers`), SOUL prompt,
-  sessions, workspace, memory namespace, and `mcp.json` servers. Infisical, port, `BASEDIR`, and
+  `allowedUsers`, `deniedUsers`), SOUL prompt, sessions, workspace, memory namespace, skill
+  namespace, and `mcp.json` servers. Infisical, port, `BASEDIR`, and
   refresh settings remain process-wide.
 
 ## Environment
@@ -370,6 +372,35 @@ override the built-in `2200` / `1375` character budgets for `MEMORY.md` / `USER.
 invisible/bidi Unicode and the delimiter are rejected. The system prompt snapshot is frozen for the
 life of a conversation; tool results always show live entries and usage.
 
+## Skills
+
+Skills are reusable procedures stored as markdown, one file per skill:
+
+```
+BASEDIR/agent/<agent>/users/<user>/skill/<name>.md
+```
+
+`<name>` is the file stem: lowercase letters, digits, `-`, `_`, max 64 chars. The first `# heading`
+is the title; the first non-heading line is the one-line description shown in the system prompt
+index. Skill contents are not injected into the prompt, only the index, so the model reads a skill
+when it needs it.
+
+| Tool | Behavior |
+| --- | --- |
+| `server_skill_read` | Load a skill by name (contents, or `not found`). |
+| `server_skill_write` | Create or replace a skill; content is the full markdown file. |
+| `server_skill_search` | Case-insensitive content search; returns name, line, and a snippet. |
+| `server_skill_delete` | Remove a skill. |
+| `server_skill_import` | Save the skill attached to a handoff addressed to this user and agent. |
+
+`MEMORY.md` may reference a skill as `skill:<name>`; the memory snapshot expands that marker with the
+skill's description when the skill exists, so a note can point at a procedure without copying it.
+Use `server_skill_read` to load the contents.
+
+Skills are scoped to the agent and user like memory (`users/<user>/skill/`). To share one with
+another agent or user, send a handoff with `skill: <name>`; the handoff stores the markdown in
+`skillContent`, and the recipient saves it with `server_skill_import` (optionally renaming it).
+
 ## Sessions
 
 One SQLite database per agent: `BASEDIR/agent/<agent>/sessions.db` (WAL mode), tables `session` and
@@ -406,8 +437,8 @@ Handoffs move context between conversations that cannot see each other:
 
 Both kinds live in one central `BASEDIR/handoffs.db` (table `handoff`) with a `kind` column
 (`agent` / `user`), source and target user ids, source and target agents, a title, summary,
-free-form context, an optional recent transcript, `source_response_id`, and `pending` / `read` /
-`consumed` status.
+free-form context, an optional recent transcript, `source_response_id`, an optional attached skill
+(`skill` + `skillContent`), and `pending` / `read` / `consumed` status.
 
 Rows are addressed to a **user id plus agent**, not a key. One user may have several API keys; any
 of them opens the same inbox. Agent-to-agent rows also store the user's current key hash, but the
@@ -418,7 +449,7 @@ Server tools:
 
 | Tool | Behavior |
 | --- | --- |
-| `server_handoff_send` | Send context. Set exactly one of `target_agent` (same user, different agent) or `target_user` (same agent, different user). Targets are validated against the agents/users allowed for the calling key. Includes the last 20 source messages unless `include_transcript: false`. |
+| `server_handoff_send` | Send context. Set exactly one of `target_agent` (same user, different agent) or `target_user` (same agent, different user). Targets are validated against the agents/users allowed for the calling key. Includes the last 20 source messages unless `include_transcript: false`. Add `skill: <name>` to attach one of the sender's skills; the recipient saves it with `server_skill_import`. |
 | `server_handoff_inbox` | List handoffs for the current user and agent (`pending` by default; `read`, `consumed`, `all`). Entries include `kind`, `source_agent`, and `source_user`. |
 | `server_handoff_read` | Load one handoff, mark it read, and consume it by default (`consume: false` to keep it). |
 
@@ -477,7 +508,7 @@ not passed in its environment.
 ## Notes / limits
 
 - Transcripts and response ids persist in `BASEDIR/agent/<agent>/sessions.db`; memory files,
-  workspaces, and handoffs also survive restarts. Sessions are filtered by the short API-key hash,
+  skills, workspaces, and handoffs also survive restarts. Sessions are filtered by the short API-key hash,
   so rotating a user's key starts a fresh session namespace (handoffs are addressed to the user id,
   so a new key still reaches the same inbox). `store: false` skips persistence for that response.
 - Auto-compaction runs before the model call and after the input-limit estimate; the summary call

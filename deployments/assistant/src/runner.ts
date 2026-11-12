@@ -19,6 +19,7 @@ import {
 import { compactMessages, compactionTokenThreshold, createLlmSummarizer } from "./compaction.ts";
 import { isRecord } from "./guards.ts";
 import { MemoryStore, memoryInstructions } from "./memory.ts";
+import { resolveSkillReferences, SkillStore, skillsInstructions, skillDirectory } from "./skills.ts";
 import type { HandoffStore } from "./handoffs.ts";
 import { type SessionStore, messagesToSearchText } from "./sessions.ts";
 import {
@@ -31,6 +32,11 @@ import {
   namespaceServerTool,
   SERVER_TOOL_INSTRUCTIONS,
   sessionSearchTool,
+  skillDeleteTool,
+  skillImportTool,
+  skillReadTool,
+  skillSearchTool,
+  skillWriteTool,
 } from "./tools.ts";
 import { createWorkspaceTools, WORKSPACE_INSTRUCTIONS, workspaceDirectory } from "./workspace.ts";
 import {
@@ -103,6 +109,7 @@ async function buildBaseSystemPrompt(
 ): Promise<string> {
   const store = new MemoryStore(memoryDirectory(config, userId), config.memoryLimits);
   const snapshot = await store.snapshot();
+  const skills = await new SkillStore(skillDirectory(config, userId)).list();
   const targets = agentIds.filter((id) => id !== config.agentId);
   const pending = handoffStore.countPending({ userId, userHash, agent: config.agentId });
   return [
@@ -110,7 +117,8 @@ async function buildBaseSystemPrompt(
     SERVER_TOOL_INSTRUCTIONS,
     WORKSPACE_INSTRUCTIONS,
     handoffInstructions(config.agentId, targets, pending),
-    store.render("memory", snapshot.memory),
+    skillsInstructions(skills),
+    store.render("memory", resolveSkillReferences(snapshot.memory, skills)),
     store.render("user", snapshot.user),
     memoryInstructions(config.memoryLimits),
   ].join("\n\n");
@@ -601,6 +609,7 @@ export async function runResponse(options: RunOptions): Promise<Record<string, u
   const contextMessages = [...history, ...converted.messages];
   const validAgents = agentIds.filter((id) => id !== config.agentId);
   const scope = { userId, userHash, agent: config.agentId };
+  const skills = new SkillStore(skillDirectory(config, userId));
   const handoffTranscript = messagesToSearchText(contextMessages.slice(-20)).slice(-20_000);
   const serverTools: AgentTool[] = [
     namespaceServerTool(memoryTool(new MemoryStore(memoryDirectory(config, userId), config.memoryLimits))),
@@ -609,6 +618,7 @@ export async function runResponse(options: RunOptions): Promise<Record<string, u
       handoffSendTool({
         store: handoffStore,
         scope,
+        skills,
         validAgents,
         validUsers: options.knownUsers.filter((id) => id !== userId),
         sourceResponseId: normalized.previousResponseId ?? null,
@@ -617,6 +627,11 @@ export async function runResponse(options: RunOptions): Promise<Record<string, u
     ),
     namespaceServerTool(handoffInboxTool(handoffStore, scope)),
     namespaceServerTool(handoffReadTool(handoffStore, scope)),
+    namespaceServerTool(skillReadTool(skills)),
+    namespaceServerTool(skillWriteTool(skills)),
+    namespaceServerTool(skillSearchTool(skills)),
+    namespaceServerTool(skillDeleteTool(skills)),
+    namespaceServerTool(skillImportTool(skills, handoffStore, scope)),
     ...createWorkspaceTools(workspaceDirectory(config, userHash)).map((tool) => namespaceServerTool(tool)),
     ...options.mcpTools,
   ];

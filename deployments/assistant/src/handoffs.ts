@@ -29,6 +29,9 @@ export interface HandoffInput {
   context?: string;
   transcript?: string;
   sourceResponseId?: string | null;
+  /** Skill name and markdown attached for a user/agent to import with `server_skill_write`. */
+  skill?: string | null;
+  skillContent?: string | null;
 }
 
 export interface HandoffRecord {
@@ -45,6 +48,8 @@ export interface HandoffRecord {
   context: string;
   transcript: string;
   sourceResponseId: string | null;
+  skill: string | null;
+  skillContent: string | null;
   status: HandoffStatus;
   createdAt: number;
   readAt: number | null;
@@ -66,6 +71,7 @@ export interface HandoffListEntry {
 const MAX_SUMMARY = 20_000;
 const MAX_CONTEXT = 100_000;
 const MAX_TRANSCRIPT = 100_000;
+const MAX_SKILL_SOURCE = 64_000;
 
 /**
  * Recipient predicate. Rows created before user ids were stored only have a key
@@ -124,6 +130,8 @@ export class HandoffStore {
         context TEXT NOT NULL,
         transcript TEXT NOT NULL,
         source_response_id TEXT,
+        skill TEXT,
+        skill_content TEXT,
         status TEXT NOT NULL,
         created_at INTEGER NOT NULL,
         read_at INTEGER,
@@ -133,6 +141,12 @@ export class HandoffStore {
     this.db.run(
       "CREATE INDEX IF NOT EXISTS idx_handoff_inbox ON handoff(target_user_id, target_agent, status, created_at DESC)",
     );
+    // Tables created before skills existed keep their rows; add the columns in place.
+    const columns = new Set(
+      (this.db.query("PRAGMA table_info(handoff)").all() as { name: string }[]).map((column) => column.name),
+    );
+    if (!columns.has("skill")) this.db.run("ALTER TABLE handoff ADD COLUMN skill TEXT");
+    if (!columns.has("skill_content")) this.db.run("ALTER TABLE handoff ADD COLUMN skill_content TEXT");
   }
 
   /** Old rows were agent-to-agent for one user hash; user ids were not stored. */
@@ -142,11 +156,11 @@ export class HandoffStore {
         INSERT INTO handoff (
           id, kind, source_user_id, source_user_hash, target_user_id, target_user_hash,
           source_agent, target_agent, title, summary, context, transcript,
-          source_response_id, status, created_at, read_at, consumed_at
+          source_response_id, skill, skill_content, status, created_at, read_at, consumed_at
         )
         SELECT id, 'agent', NULL, user_hash, NULL, user_hash,
                source_agent, target_agent, title, summary, context, transcript,
-               source_response_id, status, created_at, read_at, consumed_at
+               source_response_id, NULL, NULL, status, created_at, read_at, consumed_at
         FROM handoff_legacy
       `);
       this.db.run("DROP TABLE handoff_legacy");
@@ -170,6 +184,8 @@ export class HandoffStore {
       context: (input.context ?? "").trim().slice(0, MAX_CONTEXT),
       transcript: (input.transcript ?? "").trim().slice(0, MAX_TRANSCRIPT),
       sourceResponseId: input.sourceResponseId ?? null,
+      skill: input.skill?.trim() || null,
+      skillContent: input.skillContent?.trim().slice(0, MAX_SKILL_SOURCE) || null,
       status: "pending",
       createdAt: now,
       readAt: null,
@@ -180,8 +196,8 @@ export class HandoffStore {
         `INSERT INTO handoff (
           id, kind, source_user_id, source_user_hash, target_user_id, target_user_hash,
           source_agent, target_agent, title, summary, context, transcript,
-          source_response_id, status, created_at, read_at, consumed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          source_response_id, skill, skill_content, status, created_at, read_at, consumed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         record.id,
@@ -197,6 +213,8 @@ export class HandoffStore {
         record.context,
         record.transcript,
         record.sourceResponseId,
+        record.skill,
+        record.skillContent,
         record.status,
         record.createdAt,
         null,
@@ -220,6 +238,8 @@ export class HandoffStore {
       context: String(row.context),
       transcript: String(row.transcript),
       sourceResponseId: row.source_response_id === null ? null : String(row.source_response_id),
+      skill: row.skill === null || row.skill === undefined ? null : String(row.skill),
+      skillContent: row.skill_content === null || row.skill_content === undefined ? null : String(row.skill_content),
       status: String(row.status) as HandoffStatus,
       createdAt: Number(row.created_at),
       readAt: row.read_at === null ? null : Number(row.read_at),
@@ -321,8 +341,10 @@ export function renderHandoffMarkdown(record: HandoffRecord): string {
     `- created_at: ${new Date(record.createdAt).toISOString()}`,
   ];
   if (record.sourceResponseId) lines.push(`- source_response_id: ${record.sourceResponseId}`);
+  if (record.skill) lines.push(`- skill: ${record.skill}`);
   lines.push("", "## Summary", "", record.summary);
   if (record.context) lines.push("", "## Context", "", record.context);
   if (record.transcript) lines.push("", "## Transcript", "", record.transcript);
+  if (record.skillContent) lines.push("", `## Skill: ${record.skill ?? "untitled"}`, "", record.skillContent);
   return `${lines.join("\n")}\n`;
 }
