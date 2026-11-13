@@ -134,6 +134,10 @@ allowedReasoningEfforts:
 - `reasoningEffort` sets this agent's default effort and overrides `REASONING_EFFORT`.
   `allowedReasoningEfforts` lists the alternatives a request may select; the default is always
   accepted. Empty means only the default is allowed.
+- The effort list is advertised on `/v1/models` as `supported_reasoning_levels` (with
+  `{"effort":"none"}` when `off` is allowed) and `default_reasoning_level`, so clients that build a
+  thinking picker from discovery (omp, for example) enable it. With no efforts configured the row
+  omits both fields and clients treat the model as non-reasoning.
 - `config.yaml` is gitignored because it can contain an API key; commit
   `config.example.yaml` instead.
 
@@ -212,6 +216,8 @@ BASEDIR/agent/
 
 - `/v1/models` returns one entry per agent directory that contains `SOUL.md`, using the directory
   name as the model id. The env-configured default (`AGENT_ID` / `AGENT_DIR`) is always included.
+  Rows also advertise the agent's reasoning ladder (`supported_reasoning_levels`,
+  `default_reasoning_level`); standard OpenAI fields are unchanged.
 - The request `model` field selects the agent. `model` omitted → the env default agent.
 - Backend `MODEL`/`MODEL_ALIASES` are accepted for the default agent only; this keeps old clients
   working. Agent ids win if an id collides with an alias.

@@ -1,4 +1,5 @@
 import { discoverAgents, resolveAgent, type AgentDefinition } from "./src/agents.ts";
+import { modelReasoningMetadata } from "./src/model.ts";
 import { createInfisicalClient } from "./src/auth/infisical.ts";
 import { keyHash, requestToken, UserRegistry } from "./src/auth/users.ts";
 import { isUserAllowed, loadConfig } from "./src/config.ts";
@@ -44,12 +45,20 @@ function apiError(message: string, status: number, code: string, param: string |
   return json({ error: { message, type, param, code } }, status);
 }
 
+/** Capabilities a `/v1/models` row may declare; omp reads these to build its effort picker. */
+function modelRow(agent: AgentDefinition, id: string, created: number): Record<string, unknown> {
+  return {
+    id,
+    object: "model",
+    created,
+    owned_by: "pi-assistant",
+    ...modelReasoningMetadata(agent.config),
+  };
+}
+
 function modelList(allowed: AgentDefinition[]): Response {
   const created = Math.floor(Date.now() / 1_000);
-  return json({
-    object: "list",
-    data: allowed.map((agent) => ({ id: agent.id, object: "model", created, owned_by: "pi-assistant" })),
-  });
+  return json({ object: "list", data: allowed.map((agent) => modelRow(agent, agent.id, created)) });
 }
 
 const HANDOFF_STATUSES = ["pending", "read", "consumed", "all"] as const;
@@ -246,7 +255,7 @@ async function handleRequest(request: Request, url: URL, requestTelemetry: Reque
     const id = decodeURIComponent(path.slice("/v1/models/".length));
     const agent = allowedAgents.find((entry) => entry.id === id);
     if (agent) {
-      return json({ id, object: "model", created: Math.floor(Date.now() / 1_000), owned_by: "pi-assistant" });
+      return json(modelRow(agent, id, Math.floor(Date.now() / 1_000)));
     }
     if (agents.some((entry) => entry.id === id)) {
       return apiError(`User ${userId} is not allowed to use agent ${id}`, 403, "user_not_allowed");
