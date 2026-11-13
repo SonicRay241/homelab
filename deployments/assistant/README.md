@@ -138,6 +138,11 @@ allowedReasoningEfforts:
   `{"effort":"none"}` when `off` is allowed) and `default_reasoning_level`, so clients that build a
   thinking picker from discovery (omp, for example) enable it. With no efforts configured the row
   omits both fields and clients treat the model as non-reasoning.
+- Discovery only applies when the client actually reads `/v1/models`. In omp, a provider that
+  lists `models:` explicitly never runs discovery; delete that list and add
+  `discovery: { type: openai-models-list }` (plus `api` and `baseUrl`), or declare
+  `reasoning: true` and `thinking: { mode: effort, efforts: [low, medium, high], defaultLevel: medium }`
+  on the model entry.
 - `config.yaml` is gitignored because it can contain an API key; commit
   `config.example.yaml` instead.
 
