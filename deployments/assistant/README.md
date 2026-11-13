@@ -136,8 +136,11 @@ allowedReasoningEfforts:
   accepted. Empty means only the default is allowed.
 - The effort list is advertised on `/v1/models` as `supported_reasoning_levels` (with
   `{"effort":"none"}` when `off` is allowed) and `default_reasoning_level`, so clients that build a
-  thinking picker from discovery (omp, for example) enable it. With no efforts configured the row
-  omits both fields and clients treat the model as non-reasoning.
+  thinking picker from discovery (omp, for example) enable it. Rows also report `context_length`
+  from `CONTEXT_WINDOW` and `max_output_tokens` from `MAX_TOKENS`. With no efforts configured the
+  row omits the reasoning fields and clients treat the model as non-reasoning.
+- `max` is the client-facing top tier and is sent to the backend as `xhigh`, the highest level
+  pi understands.
 - Discovery only applies when the client actually reads `/v1/models`. In omp, a provider that
   lists `models:` explicitly never runs discovery; delete that list and add
   `discovery: { type: openai-models-list }` (plus `api` and `baseUrl`), or declare
@@ -241,7 +244,7 @@ BASEDIR/agent/
 | `API_KEY` | yes | – | Backend credential (never sent to clients) |
 | `MODEL` | no | `beam:cloud` | Default backend model |
 | `MODEL_ALIASES` | no | – | Extra accepted `model` values for the default agent (not listed in `/v1/models`) |
-| `REASONING_EFFORT` | no | `off` | Default effort: `off`, `minimal`, `low`, `medium`, `high`, `xhigh` |
+| `REASONING_EFFORT` | no | `off` | Default effort: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
 | `INFISICAL_BASE_URL` | yes | – | Infisical instance URL |
 | `INFISICAL_CLIENT_ID` / `INFISICAL_CLIENT_SECRET` | yes | – | Universal Auth machine identity |
 | `INFISICAL_PROJECT_ID` | yes | – | Project holding the user secrets |

@@ -1,5 +1,5 @@
 import { discoverAgents, resolveAgent, type AgentDefinition } from "./src/agents.ts";
-import { modelReasoningMetadata } from "./src/model.ts";
+import { modelMetadata } from "./src/model.ts";
 import { createInfisicalClient } from "./src/auth/infisical.ts";
 import { keyHash, requestToken, UserRegistry } from "./src/auth/users.ts";
 import { isUserAllowed, loadConfig } from "./src/config.ts";
@@ -52,7 +52,7 @@ function modelRow(agent: AgentDefinition, id: string, created: number): Record<s
     object: "model",
     created,
     owned_by: "pi-assistant",
-    ...modelReasoningMetadata(agent.config),
+    ...modelMetadata(agent.config),
   };
 }
 

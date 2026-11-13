@@ -1,8 +1,15 @@
 import { resolveAgentDir, resolveAgentsDir, resolveBasedir } from "./basedir.ts";
 import { DEFAULT_MEMORY_LIMITS, type MemoryLimits } from "./memory.ts";
 
-export const REASONING_EFFORTS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+export const REASONING_EFFORTS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
+
+/** pi's highest level; clients spell it `max`. */
+export type PiThinkingLevel = Exclude<ReasoningEffort, "max">;
+
+export function piThinkingLevel(effort: ReasoningEffort): PiThinkingLevel {
+  return effort === "max" ? "xhigh" : effort;
+}
 
 /** Accepts `none` as an alias for `off`. */
 export function normalizeReasoningEffort(value: string): ReasoningEffort | undefined {

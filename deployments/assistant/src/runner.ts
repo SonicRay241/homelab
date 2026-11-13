@@ -12,6 +12,7 @@ import {
 } from "@mariozechner/pi-ai";
 import {
   normalizeReasoningEffort,
+  piThinkingLevel,
   REASONING_EFFORTS,
   type AssistantConfig,
   type ReasoningEffort,
@@ -691,7 +692,8 @@ export async function runResponse(options: RunOptions): Promise<Record<string, u
       model,
       messages: initialMessages,
       tools,
-      thinkingLevel: normalized.reasoningEffort,
+      // Clients spell the top tier `max`; pi and the backend take `xhigh`.
+      thinkingLevel: piThinkingLevel(normalized.reasoningEffort),
     },
     getApiKey: () => config.apiKey,
     toolExecution: normalized.parallelToolCalls ? "parallel" : "sequential",

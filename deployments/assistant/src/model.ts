@@ -47,6 +47,21 @@ export function buildModel(config: AssistantConfig): Model<"openai-completions">
  * `reasoning_effort` (OpenAI Chat Completions) is the wire field; Responses
  * clients send `reasoning.effort`. Both map through the same effort list.
  */
+export function modelMetadata(
+  config: Pick<
+    AssistantConfig,
+    "reasoningEffort" | "allowedReasoningEfforts" | "contextWindow" | "maxTokens"
+  >,
+): Record<string, unknown> {
+  return {
+    ...modelReasoningMetadata(config),
+    // omp reads `max_model_len` first, then `context_length`; OpenRouter and
+    // vLLM both use the latter. `max_output_tokens` is the accepted output cap.
+    context_length: config.contextWindow,
+    max_output_tokens: config.maxTokens,
+  };
+}
+
 export function modelReasoningMetadata(
   config: Pick<AssistantConfig, "reasoningEffort" | "allowedReasoningEfforts">,
 ): Record<string, unknown> {
